@@ -1,0 +1,82 @@
+[
+  {
+    "name": "@cozanet/core",
+    "repo": "cozanet-core",
+    "description": "Core kernel and low-level resource management."
+  },
+  {
+    "name": "@cozanet/ceo",
+    "repo": "cozanet-ceo",
+    "description": "Chief Executive Orchestrator coordinating all swarms."
+  },
+  {
+    "name": "@cozanet/comms",
+    "repo": "cozanet-comms",
+    "description": "Event-driven inter-engine message bus."
+  },
+  {
+    "name": "@cozanet/memory",
+    "repo": "cozanet-memory",
+    "description": "Decoupled multi-tiered and vector memory system."
+  },
+  {
+    "name": "@cozanet/security",
+    "repo": "cozanet-security",
+    "description": "Asymmetric encryption and engine isolation engine."
+  },
+  {
+    "name": "@cozanet/groq",
+    "repo": "cozanet-groq",
+    "description": "Multi-key rotating Groq API client execution layer."
+  },
+  {
+    "name": "@cozanet/plugins",
+    "repo": "cozanet-plugins",
+    "description": "Runtime plugin sandboxing and validation framework."
+  },
+  {
+    "name": "@cozanet/agent",
+    "repo": "cozanet-agent",
+    "description": "Dynamic agent runner, lifecycle and behavior state trees."
+  },
+  {
+    "name": "@cozanet/perception",
+    "repo": "cozanet-perception",
+    "description": "Perceptual stream parsing for audio, video and textual events."
+  },
+  {
+    "name": "@cozanet/action",
+    "repo": "cozanet-action",
+    "description": "Secure tool caller and external API runner."
+  },
+  {
+    "name": "@cozanet/ui",
+    "repo": "cozanet-ui",
+    "description": "Operational visual command dashboard."
+  },
+  {
+    "name": "@cozanet/cli",
+    "repo": "cozanet-cli",
+    "description": "Command line interface for direct system access."
+  },
+  {
+    "name": "@cozanet/db",
+    "repo": "cozanet-db",
+    "description": "State transaction and time-series database wrapper."
+  },
+  {
+    "name": "@cozanet/analytics",
+    "repo": "cozanet-analytics",
+    "description": "Engine performance and cognitive trace profiling tool."
+  },
+  {
+    "name": "@cozanet/auth",
+    "repo": "cozanet-auth",
+    "description": "Agent/User identity verification and permissions validator."
+  },
+  {
+    "name": "@cozanet/registry",
+    "repo": "cozanet-registry",
+    "description": "Dynamic engine registry and service ledger."
+  }
+]
