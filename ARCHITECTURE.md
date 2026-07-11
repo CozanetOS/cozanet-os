@@ -10,47 +10,39 @@ CozanetOS operates as a highly decentralized, multi-agent operating system. Rath
 
 ```
        +-----------------------------------------------------------+
-       |                     Cozanet CLI / UI                      |
+       |                  Cozanet Workspaces UI                    |
+       |                   (cozanet-workspaces)                    |
        +-----------------------------+-----------------------------+
                                      |
                                      v
        +-----------------------------------------------------------+
-       |               Cozanet Comm Bus (cozanet-comms)            |
+       |            Cozanet Comm Bus (cozanet-communication)        |
        +-----+-----------------+-----------------+-----------------+
              |                 |                 |
              v                 v                 v
        +-----+----+      +-----+----+      +-----+----+
-       | CEO Engine |    | Memory   |      | Groq     |
-       | (Orchestr)|    | Engine   |      | Engine   |
+       | Agents   |      | Memory   |      | Security |
+       | Engine   |      | Engine   |      | Engine   |
        +----------+      +----------+      +----------+
 ```
 
 ---
 
-## 🧠 CEO Orchestration Flow
+## 🧠 Core Agentic Orchestration Flow
 
-The **CEO Engine (`cozanet-ceo`)** acts as the supreme planner, system router, and supervisor. 
+The **Agents Engine (`cozanet-agents`)** acts as the supreme planner, goal-manager, and supervisor. 
 
-1. **Intake**: A user intent or system trigger enters the system via CLI/UI or external hooks.
-2. **Analysis**: The CEO Engine parses the intent using the **Groq Engine** to generate an abstract execution plan.
-3. **Task Delegation**: The CEO maps specific tasks to appropriate specialized engines using their registered **String IDs**.
+1. **Intake**: A user intent or system trigger enters the system via Workspaces UI, CLI, or communication hooks.
+2. **Analysis**: The Agents Engine parses the intent to generate an abstract execution plan with dynamic step-by-step goal decomposition.
+3. **Task Delegation**: The Agents Engine maps tasks to appropriate specialized engines (such as browser, terminal, database, or development) using their registered **String IDs**.
 4. **Execution Swarm**: Engines execute tasks concurrently, communicating via the `CommunicationBus`.
-5. **State Merging**: The CEO aggregates results, handles exceptions, and presents the final system state back to the user or caller.
+5. **State Merging**: The Agents Engine aggregates results, performs self-reflection and confidence validation, and outputs the final system state back to the user or workspace.
 
 ---
 
 ## 📡 Engine Registration & Routing
 
-Engines register dynamically with the **Registry Engine (`cozanet-registry`)** during startup. 
-
-```typescript
-interface EngineManifest {
-  id: string; // e.g. "cozanet-engine-memory"
-  version: string;
-  capabilities: string[];
-  endpoint: string;
-}
-```
+Engines register dynamically during startup, advertising their capabilities and subscribing to message streams.
 
 ### Communication Protocol
 Message routing is strictly managed using unique **String IDs** over the `CommunicationBus`. This ensures zero compile-time dependencies between engines, allowing for effortless hot-swapping and scaling.
@@ -58,12 +50,12 @@ Message routing is strictly managed using unique **String IDs** over the `Commun
 ```json
 {
   "id": "msg_908234908234",
-  "source": "cozanet-engine-ceo",
+  "source": "cozanet-engine-agents",
   "destination": "cozanet-engine-security",
   "type": "AUTHORIZE_TRANSACTION",
   "payload": {
-    "target_engine": "cozanet-engine-action",
-    "operation": "SYSTEM_SHUTDOWN"
+    "target_engine": "cozanet-engine-terminal",
+    "operation": "EXECUTE_SANDBOX_COMMAND"
   },
   "timestamp": 1783852100000
 }
@@ -77,22 +69,69 @@ CozanetOS models memory after human cognitive structures:
 
 1. **L1 (Hot Memory)**: Local in-memory caches (Redis/Memcached) supporting sub-millisecond retrieval. Used for active operational contexts.
 2. **L2 (Warm Memory)**: Transactional document databases holding active conversation states, session variables, and temporary agent states.
-3. **L3 (Cold/Vector Memory)**: Vector database (such as Qdrant or Milvus) storing long-term episodic memory, facts, and experiences enabling semantic retrieval.
+3. **L3 (Cold/Vector Memory)**: Vector database storing long-term episodic memory, facts, and experiences enabling semantic retrieval.
 
 ---
 
-## 🚀 Ultra-Fast Groq Integration
+## 👁️ CX7 Visual Intelligence & Workspaces
 
-The **Groq Engine (`cozanet-groq`)** leverages Groq's high-throughput, low-latency Language Processing Units (LPUs). 
-
-To ensure continuous high-availability and bypass strict API rate limits, CozanetOS implements a **Dynamic API Key Rotation System**. The engine rotates queries across 3 independent Groq keys using a round-robin algorithm that monitors latency and rate-limit headers.
+The **CX7 Engine (`cozanet-cx7`)** powers CozanetOS's visual identity with dynamic, programmable visual cells and layouts.
+- **Visual Grid Canvas**: An infinite zoomable/pannable vector workspace that renders interactive system diagrams, real-time code executions, and AI verification steps.
+- **Adaptive UI Orchestration**: Managed by `@cozanet/workspaces` to split layouts seamlessly across code viewports, headless browser screens, and terminals.
 
 ---
 
-## 🛡️ Security & Isolation Model
+## 🌍 Headless Browser Workspace
 
-Security is managed centrally by **`cozanet-security`**:
+The **Browser Engine (`cozanet-browser`)** deploys sandboxed chromium instances enabling:
+- Real-time page scraping and text extraction.
+- Automatic form-filling, session handling, and login orchestration.
+- Image generation of rendered pages for optical screen-understanding.
 
-- **Cryptographic Engine Isolation**: Every inter-engine communication is signed and verified using asymmetric key pairs generated during bootstrapping.
-- **Role-Based Agent Privileges**: Agents are assigned strict capabilities. An agent cannot access external networks unless explicitly granted the `NET_OUTBOUND` permission by the security controller.
-- **Secure Sandboxing**: Dynamic actions executed by `cozanet-action` are isolated inside short-lived micro-containers to prevent host system contamination.
+---
+
+## 📱 Device & Filesystem Abstraction
+
+- **Device Management (`cozanet-device`)**: Syncs file registries, clipboard logs, and notification flows across multiple hardware hosts.
+- **Filesystem (`cozanet-filesystem`)**: Maintains physical backups, file-watching event handlers, and encrypted sync protocols.
+
+---
+
+## 🖥️ Terminal & Sandboxed Execution
+
+The **Terminal Engine (`cozanet-terminal`)** acts as the direct system command gateway. It routes execution processes through isolated environments, capture histories, and isolates system runtimes to block escape exploits.
+
+---
+
+## 📧 Productivity & Communication Integrations
+
+- **Productivity & Apps (`cozanet-apps`)**: Orchestrates calendars, rich note environments, checklists, and calendar triggers.
+- **Communication Hub (`cozanet-communication`)**: Links external mail channels (Gmail, Outlook) to internal action events, supporting automatic drafting and sorting.
+
+---
+
+## 🧩 Sandbox Plugin System
+
+The **Plugin System (`cozanet-plugins`)** operates a dynamic loader that checks third-party developer integration manifests. It restricts capabilities programmatically (e.g. denying local file writes) using security sandboxes.
+
+---
+
+## 🔑 Decentralized Identity & Security Isolation
+
+- **Identity System (`cozanet-identity`)**: Provides credentials security, Multi-Factor authentication, SSO, and Passkeys.
+- **Security Engine (`cozanet-security`)**: Handles system-wide encryption, continuous threat audits, package vulnerability assessments, and permission enforcements.
+
+---
+
+## 📊 Telemetry & Monitoring
+
+The **Monitoring Engine (`cozanet-monitoring`)** offers complete observability over the agent mesh. It monitors metrics such as cost-tracking, API health indicators, and core system diagnostics.
+
+---
+
+## 🧬 Future Expansion Layers
+
+As CozanetOS scales, its architecture supports:
+1. **Edge Node Orchestration**: For decentralized processing on consumer hardware.
+2. **Distributed Swarms**: For server-to-server collaborative problem solving.
+3. **Physical Interfaces**: Direct SDK targets for robotics and IoT controllers.
