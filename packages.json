@@ -2,81 +2,116 @@
   {
     "name": "@cozanet/core",
     "repo": "cozanet-core",
-    "description": "Core kernel and low-level resource management."
+    "description": "Core kernel, low-level process, and resource management engine."
   },
   {
-    "name": "@cozanet/ceo",
-    "repo": "cozanet-ceo",
-    "description": "Chief Executive Orchestrator coordinating all swarms."
+    "name": "@cozanet/agents",
+    "repo": "cozanet-agents",
+    "description": "Dynamic agent runners, behavior state trees, lifecycle controllers, and orchestration."
   },
   {
-    "name": "@cozanet/comms",
-    "repo": "cozanet-comms",
-    "description": "Event-driven inter-engine message bus."
+    "name": "@cozanet/api",
+    "repo": "cozanet-api",
+    "description": "API Gateway, credentials vault, provider routing, cost/usage tracking, and SDK manager."
+  },
+  {
+    "name": "@cozanet/apps",
+    "repo": "cozanet-apps",
+    "description": "User productivity applications, email, calendar, notes, task-lists, and dashboard apps."
+  },
+  {
+    "name": "@cozanet/automation",
+    "repo": "cozanet-automation",
+    "description": "Workflow automation, scheduled background tasks, recurring jobs, and trigger queue manager."
+  },
+  {
+    "name": "@cozanet/browser",
+    "repo": "cozanet-browser",
+    "description": "Secure, autonomous headless browser workspace, scraping, form filling, and session controller."
+  },
+  {
+    "name": "@cozanet/communication",
+    "repo": "cozanet-communication",
+    "description": "Communication system hub integrating Gmail, Outlook, slack, messaging, and chat channels."
+  },
+  {
+    "name": "@cozanet/cx7",
+    "repo": "cozanet-cx7",
+    "description": "CX7 Visual Intelligence engine for dynamic programmable canvas and immersive interactive layouts."
+  },
+  {
+    "name": "@cozanet/database",
+    "repo": "cozanet-database",
+    "description": "Structured transactional, time-series, and config DB manager with semantic search hooks."
+  },
+  {
+    "name": "@cozanet/development",
+    "repo": "cozanet-development",
+    "description": "Developer toolkit with auto-code completion, tests runner, refactoring, and CI/CD tools."
+  },
+  {
+    "name": "@cozanet/device",
+    "repo": "cozanet-device",
+    "description": "Device management ledger for connected local and remote IoT, hardware, and mobile devices."
+  },
+  {
+    "name": "@cozanet/filesystem",
+    "repo": "cozanet-filesystem",
+    "description": "Virtual filesystem orchestrator supporting cloud sync, hot backup, and file watcher events."
+  },
+  {
+    "name": "@cozanet/identity",
+    "repo": "cozanet-identity",
+    "description": "Decentralized identity engine handling account registries, passkeys, MFA, and OAuth vaults."
+  },
+  {
+    "name": "@cozanet/learning",
+    "repo": "cozanet-learning",
+    "description": "Continuous learning and habit profiling engine that personalizes actions based on user behavior."
   },
   {
     "name": "@cozanet/memory",
     "repo": "cozanet-memory",
-    "description": "Decoupled multi-tiered and vector memory system."
+    "description": "Decoupled multi-tiered vector, semantic, episodic, and conversation memory architecture."
   },
   {
-    "name": "@cozanet/security",
-    "repo": "cozanet-security",
-    "description": "Asymmetric encryption and engine isolation engine."
+    "name": "@cozanet/monitoring",
+    "repo": "cozanet-monitoring",
+    "description": "Telemetry and monitoring hub tracking performance, alerts, traces, and metrics diagnostics."
   },
   {
-    "name": "@cozanet/groq",
-    "repo": "cozanet-groq",
-    "description": "Multi-key rotating Groq API client execution layer."
+    "name": "@cozanet/multimodal",
+    "repo": "cozanet-multimodal",
+    "description": "Multimodal perception engine for real-time speech, audio, image, video, and OCR understanding."
+  },
+  {
+    "name": "@cozanet/os",
+    "repo": "cozanet-os",
+    "description": "CozanetOS root repository acting as the monorepo coordinator and bootstrap controller."
   },
   {
     "name": "@cozanet/plugins",
     "repo": "cozanet-plugins",
-    "description": "Runtime plugin sandboxing and validation framework."
+    "description": "Sandboxed runtime plugin system with third-party cognitive tools and marketplace capabilities."
   },
   {
-    "name": "@cozanet/agent",
-    "repo": "cozanet-agent",
-    "description": "Dynamic agent runner, lifecycle and behavior state trees."
+    "name": "@cozanet/security",
+    "repo": "cozanet-security",
+    "description": "Cryptographic engine isolation, audit logging, vulnerability scanners, and key controllers."
   },
   {
-    "name": "@cozanet/perception",
-    "repo": "cozanet-perception",
-    "description": "Perceptual stream parsing for audio, video and textual events."
+    "name": "@cozanet/shared",
+    "repo": "cozanet-shared",
+    "description": "Common typings, protocol models, messaging schemas, and utility constants used across all modules."
   },
   {
-    "name": "@cozanet/action",
-    "repo": "cozanet-action",
-    "description": "Secure tool caller and external API runner."
+    "name": "@cozanet/terminal",
+    "repo": "cozanet-terminal",
+    "description": "Intelligent sandboxed terminal execution controller supporting system commands and history."
   },
   {
-    "name": "@cozanet/ui",
-    "repo": "cozanet-ui",
-    "description": "Operational visual command dashboard."
-  },
-  {
-    "name": "@cozanet/cli",
-    "repo": "cozanet-cli",
-    "description": "Command line interface for direct system access."
-  },
-  {
-    "name": "@cozanet/db",
-    "repo": "cozanet-db",
-    "description": "State transaction and time-series database wrapper."
-  },
-  {
-    "name": "@cozanet/analytics",
-    "repo": "cozanet-analytics",
-    "description": "Engine performance and cognitive trace profiling tool."
-  },
-  {
-    "name": "@cozanet/auth",
-    "repo": "cozanet-auth",
-    "description": "Agent/User identity verification and permissions validator."
-  },
-  {
-    "name": "@cozanet/registry",
-    "repo": "cozanet-registry",
-    "description": "Dynamic engine registry and service ledger."
+    "name": "@cozanet/workspaces",
+    "repo": "cozanet-workspaces",
+    "description": "Adaptive visual workspace layouts and multi-view orchestrator integrating all system views."
   }
 ]
