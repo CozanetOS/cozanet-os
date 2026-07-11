@@ -15,12 +15,12 @@ By transforming traditional system resources into active, self-correcting neural
 
 ## 🏗️ Architecture Overview
 
-CozanetOS uses a highly decoupled, modular architecture comprised of specialized **micro-engines** coordinated by a central **CEO Engine (Chief Executive Orchestrator)**. 
+CozanetOS uses a highly decoupled, modular architecture comprised of specialized **micro-engines** coordinated by a central message routing framework.
 
 ```
                                   +-----------------------+
                                   |   CEO Orchestrator    |
-                                  |      (cozanet-ceo)    |
+                                  |     (cozanet-agents)  |
                                   +-----------+-----------+
                                               |
                                      [CommunicationBus]
@@ -28,8 +28,8 @@ CozanetOS uses a highly decoupled, modular architecture comprised of specialized
      +-------------------+--------------------+--------------------+-------------------+
      |                   |                    |                    |                   |
 +----+----+         +----+----+          +----+----+          +----+----+         +----+----+
-|  Core   |         | Memory  |          | Security|          |  Groq   |         | Plugins |
-|  Engine |         | Engine  |          | Engine  |          | Engine  |         | Engine  |
+|  Core   |         | Memory  |          | Security|          |   CX7   |         | Browser |
+|  Engine |         | Engine  |          | Engine  |          |  Engine |         |  Engine |
 +---------+         +---------+          +---------+          +---------+         +---------+
 ```
 
@@ -38,26 +38,35 @@ Engines do not call each other directly via tight RPC bindings or arbitrary APIs
 
 ---
 
-## 📦 Modules (The 16+ CozanetOS Engines)
+## 📦 Modules (The 23+ CozanetOS Org Repositories)
 
-CozanetOS consists of the following dedicated modules, each hosted in its own repository:
+CozanetOS consists of the following dedicated modules, each hosted in its own repository within the organization:
 
-1. **`cozanet-core`**: The kernel and core process/resource manager.
-2. **`cozanet-ceo`**: The Chief Executive Orchestrator coordinating all engine swarms.
-3. **`cozanet-comms`**: Standardized Message Bus and network router for inter-engine communication.
-4. **`cozanet-memory`**: Multi-tiered memory engine (Hot, Warm, Cold/Vector).
-5. **`cozanet-security`**: Fine-grained access control, encryption, and cryptographic isolation.
-6. **`cozanet-groq`**: Ultra-fast LLM execution layer optimized for multi-key Groq rotation.
-7. **`cozanet-plugins`**: Dynamic loader and validator for third-party cognitive tools.
-8. **`cozanet-agent`**: Base class, agent execution runtimes, and lifecycle controllers.
-9. **`cozanet-perception`**: Real-time multi-modal input processing (audio, vision, text streams).
-10. **`cozanet-action`**: External integration execution engine (APIs, tools, terminal execution).
-11. **`cozanet-ui`**: Next-generation web-based operational command center.
-12. **`cozanet-cli`**: Developer command line interface for direct system interaction.
-13. **`cozanet-db`**: Structured time-series and state transactional database.
-14. **`cozanet-analytics`**: Performance monitoring, trace analysis, and engine efficiency telemetry.
-15. **`cozanet-auth`**: User/Agent authentication, session tokens, and identity management.
-16. **`cozanet-registry`**: System-wide service discovery and engine availability ledger.
+| Module / Repository | NPM Package Name | Scope / Responsibility |
+|---|---|---|
+| **`cozanet-core`** | `@cozanet/core` | Core kernel and low-level resource management. |
+| **`cozanet-agents`** | `@cozanet/agents` | Agent runners, dynamic state trees, planning, and goal decomposition. |
+| **`cozanet-api`** | `@cozanet/api` | API Registry, credentials vault, provider routing, cost tracking. |
+| **`cozanet-apps`** | `@cozanet/apps` | Desktop productivity applications (Calendar, Notes, To-do lists). |
+| **`cozanet-automation`** | `@cozanet/automation` | Workflow automation, scheduled background jobs, and trigger queues. |
+| **`cozanet-browser`** | `@cozanet/browser` | Autonomous headless browser controller and scraping workspaces. |
+| **`cozanet-communication`**| `@cozanet/communication` | Messaging routing and integration with external platforms (Gmail, Outlook). |
+| **`cozanet-cx7`** | `@cozanet/cx7` | CX7 visual engine for dynamic programmable infinite layouts. |
+| **`cozanet-database`** | `@cozanet/database` | State transaction, configuration storage, and semantic searches. |
+| **`cozanet-development`** | `@cozanet/development` | Software engineering toolkit, tests, refactoring, and CI/CD. |
+| **`cozanet-device`** | `@cozanet/device` | Registry and synchronization for local & remote connected devices. |
+| **`cozanet-filesystem`** | `@cozanet/filesystem` | Virtual filesystem, file watchers, hot backups, and directory ops. |
+| **`cozanet-identity`** | `@cozanet/identity` | Decentralized credentials vault, OAuth sessions, and MFA tracking. |
+| **`cozanet-learning`** | `@cozanet/learning` | Continuous personal preference profiling and habit tracking. |
+| **`cozanet-memory`** | `@cozanet/memory` | Multi-tiered memory engine (Hot, Warm, Cold/Vector). |
+| **`cozanet-monitoring`** | `@cozanet/monitoring` | Performance logs, health heartbeats, diagnostics, and metrics. |
+| **`cozanet-multimodal`** | `@cozanet/multimodal` | Auditory and visual sensory parsing, TTS/STT, OCR, and vision. |
+| **`cozanet-os`** | `@cozanet/os` | CozanetOS root repository and monorepo manager. |
+| **`cozanet-plugins`** | `@cozanet/plugins` | Sandbox executor for third-party cognitive plugin extensions. |
+| **`cozanet-security`** | `@cozanet/security` | Cryptographic engine isolation, audit records, and security scanners. |
+| **`cozanet-shared`** | `@cozanet/shared` | Shared typings, data models, message structures, and helper protocols. |
+| **`cozanet-terminal`** | `@cozanet/terminal` | Terminal command execution pipelines inside protected sandboxes. |
+| **`cozanet-workspaces`** | `@cozanet/workspaces` | Adaptive UI workspace layouts and viewport focus controller. |
 
 ---
 
@@ -67,7 +76,7 @@ CozanetOS consists of the following dedicated modules, each hosted in its own re
 - Node.js (v18+)
 - Python (v3.10+)
 - Docker (optional, for fully isolated deployments)
-- A valid Groq API key
+- A valid LLM Provider API key (Groq, OpenAI, Anthropic, etc.)
 
 ### Quick Start
 1. **Clone the root monorepo:**
@@ -77,7 +86,7 @@ CozanetOS consists of the following dedicated modules, each hosted in its own re
    ```
 
 2. **Bootstrap all engines:**
-   Our bootstrapping script clones all 16+ engine repositories into the local development workspace:
+   Our bootstrapping script clones all 23+ engine repositories into the local development workspace:
    ```bash
    ./scripts/bootstrap.sh
    ```
@@ -111,7 +120,7 @@ bus.send({
 });
 ```
 
-For more details on IDs, check [docs/ENGINE_IDS.md](docs/ENGINE_IDS.md).
+For more details on capabilities mapping, check [docs/CAPABILITIES.md](docs/CAPABILITIES.md).
 
 ---
 
