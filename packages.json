@@ -15,11 +15,6 @@
     "description": "API Gateway, credentials vault, provider routing, cost/usage tracking, and SDK manager."
   },
   {
-    "name": "@cozanet/apps",
-    "repo": "cozanet-apps",
-    "description": "User productivity applications, email, calendar, notes, task-lists, and dashboard apps."
-  },
-  {
     "name": "@cozanet/automation",
     "repo": "cozanet-automation",
     "description": "Workflow automation, scheduled background tasks, recurring jobs, and trigger queue manager."
@@ -58,11 +53,6 @@
     "name": "@cozanet/filesystem",
     "repo": "cozanet-filesystem",
     "description": "Virtual filesystem orchestrator supporting cloud sync, hot backup, and file watcher events."
-  },
-  {
-    "name": "@cozanet/identity",
-    "repo": "cozanet-identity",
-    "description": "Decentralized identity engine handling account registries, passkeys, MFA, and OAuth vaults."
   },
   {
     "name": "@cozanet/learning",
