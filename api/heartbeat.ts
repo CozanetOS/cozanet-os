@@ -1,30 +1,32 @@
 /**
- * CozanetOS Heartbeat Endpoint — Vercel Serverless Function
+ * CozanetOS Heartbeat Endpoint — Vercel Serverless Function v3
  *
- * This is the endpoint that external pingers (cron-job.org, UptimeRobot,
- * or QStash) hit to keep CozanetOS agents alive on Vercel free plan.
+ * Architecture: On-demand self-scheduling pings via QStash.
+ * - Pings ONLY happen when the AI is actively working on a task
+ * - When task is done, pinging stops automatically
+ * - No constant cron, no wasted resources
  *
- * It's fully self-contained — no npm install needed. Uses only the
- * global fetch() API (available in Vercel Edge runtime).
+ * Flow:
+ *   1. Submit task → POST {submit: true, taskType, input}
+ *   2. Heartbeat runs 8s slice, checkpoints to Redis
+ *   3. If not done → schedules next ping via QStash (60s later)
+ *   4. QStash ping arrives → runs another slice
+ *   5. Repeat until complete → pinging stops
  *
- * DEPLOY:
- *   - Push this file to your repo as `api/heartbeat.ts`
- *   - Or deploy standalone via Vercel CLI/API
+ * Endpoints:
+ *   GET  ?health=true              — health check
+ *   GET  ?status=true              — list all active/paused tasks
+ *   POST {submit: true, ...}       — submit a new task
+ *   POST {source: "qstash"}        — heartbeat ping (resume paused tasks)
+ *   POST {cancel: "checkpoint_id"} — cancel a running task
  *
- * ENV VARS (set in Vercel project settings):
- *   UPSTASH_REDIS_URL    — Your Upstash Redis REST URL
- *   UPSTASH_REDIS_TOKEN   — Your Upstash Redis REST token
- *   GROQ_API_KEY          — Your Groq API key (for LLM calls)
- *   GROQ_API_KEY_1/2/3    — Optional: rotated Groq keys
- *   QSTASH_URL            — Optional: https://qstash.upstash.io/v1
- *   QSTASH_TOKEN          — Optional: for self-scheduling
- *   HEARTBEAT_URL         — This endpoint's URL (for self-scheduling)
- *
- * EXTERNAL PING SETUP:
- *   cron-job.org → POST https://your-app.vercel.app/api/heartbeat every 1 min
+ * ENV VARS:
+ *   UPSTASH_REDIS_URL, UPSTASH_REDIS_TOKEN — checkpoint + memory storage
+ *   GROQ_API_KEY                            — LLM for agent thinking
+ *   QSTASH_URL, QSTASH_TOKEN               — self-scheduling pings
+ *   HEARTBEAT_URL                           — this endpoint's URL
  */
 
-// ── Types ────────────────────────────────────────────────────────────
 interface Checkpoint {
   id: string;
   taskId: string;
@@ -33,122 +35,104 @@ interface Checkpoint {
   input: any;
   partialOutput: any;
   stepIndex: number;
-  totalSteps?: number;
-  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
   lastCheckpointAt: number;
   resumeCount: number;
   maxResumes: number;
   lastError: string | null;
   agentState: Record<string, any>;
+  submittedAt: number;
+  taskDescription?: string;
 }
 
-interface HeartbeatResponse {
-  hadWork: boolean;
-  checkpointId: string | null;
-  completed: boolean;
-  needsAnotherPing: boolean;
-  nextPingDelayMs: number;
-  pendingCount: number;
-  timestamp: number;
-}
-
-// ── Upstash Redis helpers (HTTP only, no SDK needed) ──────────────────
+// ── Redis helpers ─────────────────────────────────────────────────────
 async function kvGet(key: string): Promise<string | null> {
   const url = process.env.UPSTASH_REDIS_URL;
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return null;
-
-  const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const data = await res.json();
-  return data.result ?? null;
+  try {
+    const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    return data.result ?? null;
+  } catch { return null; }
 }
 
-async function kvSet(key: string, value: string): Promise<void> {
+async function kvSet(key: string, value: string, ttl?: number): Promise<void> {
   const url = process.env.UPSTASH_REDIS_URL;
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return;
-
-  // Upstash pipeline: set + expire in one call
-  await fetch(`${url}/pipeline`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify([
-      ['SET', key, value],
-      ['EXPIRE', key, 86400], // 24h TTL — stale checkpoints auto-clean
-    ]),
-  });
+  try {
+    const pipeline: any[] = [['SET', key, value]];
+    if (ttl) pipeline.push(['EXPIRE', key, ttl]);
+    await fetch(`${url}/pipeline`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(pipeline),
+    });
+  } catch {}
 }
 
 async function kvDel(key: string): Promise<void> {
   const url = process.env.UPSTASH_REDIS_URL;
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return;
-  await fetch(`${url}/del/${encodeURIComponent(key)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  try {
+    await fetch(`${url}/del/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {}
 }
 
 async function kvScan(pattern: string): Promise<string[]> {
   const url = process.env.UPSTASH_REDIS_URL;
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return [];
-
-  const res = await fetch(`${url}/scan/0?match=${encodeURIComponent(pattern)}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  const data = await res.json();
-  return data.result?.[1] ?? [];
+  try {
+    const res = await fetch(`${url}/scan/0?match=${encodeURIComponent(pattern)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    return data.result?.[1] ?? [];
+  } catch { return []; }
 }
 
-// ── Checkpoint operations ────────────────────────────────────────────
-async function getPausedCheckpoints(): Promise<Checkpoint[]> {
+// ── Checkpoint operations ─────────────────────────────────────────────
+async function getAllCheckpoints(): Promise<Checkpoint[]> {
   const keys = await kvScan('cozanet:checkpoint:*');
   const results: Checkpoint[] = [];
-
   for (const key of keys) {
     const raw = await kvGet(key);
     if (raw) {
-      try {
-        const cp = JSON.parse(raw) as Checkpoint;
-        if (cp.status === 'paused') results.push(cp);
-      } catch {}
+      try { results.push(JSON.parse(raw) as Checkpoint); } catch {}
     }
   }
-
   return results;
 }
 
+async function getPausedCheckpoints(): Promise<Checkpoint[]> {
+  return (await getAllCheckpoints()).filter(c => c.status === 'paused');
+}
+
 async function saveCheckpoint(cp: Checkpoint): Promise<void> {
-  await kvSet(`cozanet:checkpoint:${cp.id}`, JSON.stringify(cp));
+  await kvSet(`cozanet:checkpoint:${cp.id}`, JSON.stringify(cp), 86400); // 24h TTL
 }
 
-async function deleteCheckpoint(id: string): Promise<void> {
-  await kvDel(`cozanet:checkpoint:${id}`);
-}
-
-// ── Groq LLM call (for agent tasks that need thinking) ─────────────────
+// ── Groq LLM ──────────────────────────────────────────────────────────
 async function callGroq(messages: any[], model?: string): Promise<string> {
   const apiKey = process.env.GROQ_API_KEY || process.env.GROQ_API_KEY_1 || '';
   if (!apiKey) return '[no-groq-key]';
-
-  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model ?? 'llama-3.3-70b-versatile',
-      messages,
-      temperature: 0.7,
-    }),
-  });
-
-  if (!res.ok) return `[groq-error:${res.status}]`;
-  const data = await res.json();
-  return data.choices[0]?.message?.content ?? '';
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ model: model ?? 'llama-3.3-70b-versatile', messages, temperature: 0.7 }),
+    });
+    if (!res.ok) return `[groq-error:${res.status}]`;
+    const data = await res.json();
+    return data.choices[0]?.message?.content ?? '';
+  } catch (err: any) { return `[groq-failed:${err.message}]`; }
 }
 
 // ── QStash self-scheduling ────────────────────────────────────────────
@@ -156,9 +140,7 @@ async function scheduleNextPing(): Promise<void> {
   const qstashUrl = process.env.QSTASH_URL;
   const qstashToken = process.env.QSTASH_TOKEN;
   const heartbeatUrl = process.env.HEARTBEAT_URL;
-
   if (!qstashUrl || !qstashToken || !heartbeatUrl) return;
-
   try {
     await fetch(`${qstashUrl}/publish/${encodeURIComponent(heartbeatUrl)}`, {
       method: 'POST',
@@ -169,14 +151,15 @@ async function scheduleNextPing(): Promise<void> {
       },
       body: JSON.stringify({ source: 'keepalive-auto' }),
     });
-  } catch {
-    // External cron (cron-job.org) will still ping — this is just a bonus
+    console.log('[heartbeat] Scheduled next ping via QStash (60s)');
+  } catch (err) {
+    console.error('[heartbeat] Failed to schedule next ping:', err);
   }
 }
 
-// ── Execute a checkpoint slice ────────────────────────────────────────
+// ── Run a task slice ──────────────────────────────────────────────────
 async function runSlice(cp: Checkpoint): Promise<void> {
-  const MAX_SLICE_MS = 8000; // 8s — buffer under Vercel's 10s limit
+  const MAX_SLICE_MS = 8000;
   const startTime = Date.now();
 
   cp.status = 'running';
@@ -185,61 +168,59 @@ async function runSlice(cp: Checkpoint): Promise<void> {
   await saveCheckpoint(cp);
 
   try {
-    // Dispatch based on task type
     let result: any;
+    const taskDesc = cp.taskDescription || cp.taskType;
 
     if (cp.taskType === 'think' || cp.taskType === 'plan' || cp.taskType === 'analyze') {
-      // LLM thinking task
-      const messages = [
+      result = await callGroq([
         { role: 'system', content: 'You are CozanetOS, a personal AI operating system. Continue the task from where you left off.' },
         { role: 'user', content: `Task: ${cp.input.goal || cp.input.task || JSON.stringify(cp.input)}\n\nPrevious progress (step ${cp.stepIndex}): ${JSON.stringify(cp.partialOutput)}` },
-      ];
-      result = await callGroq(messages);
-    } else if (cp.taskType === 'generate_code' || cp.taskType === 'code') {
-      const messages = [
-        { role: 'system', content: 'You are CozanetOS code generation engine. Generate clean, production-ready code.' },
-        { role: 'user', content: `Generate code for: ${JSON.stringify(cp.input)}\n\nPrevious output: ${JSON.stringify(cp.partialOutput)}` },
-      ];
-      result = await callGroq(messages);
+      ]);
+    } else if (cp.taskType === 'build' || cp.taskType === 'generate_code' || cp.taskType === 'code') {
+      result = await callGroq([
+        { role: 'system', content: 'You are CozanetOS code generation engine. Generate clean, production-ready code. Continue from where you left off.' },
+        { role: 'user', content: `Build/generate: ${JSON.stringify(cp.input)}\n\nPrevious output (step ${cp.stepIndex}): ${JSON.stringify(cp.partialOutput)}` },
+      ]);
+    } else if (cp.taskType === 'learn' || cp.taskType === 'study') {
+      result = await callGroq([
+        { role: 'system', content: 'You are CozanetOS learning engine. Study and absorb the material. Continue from where you left off.' },
+        { role: 'user', content: `Learn about: ${JSON.stringify(cp.input)}\n\nPrevious notes (step ${cp.stepIndex}): ${JSON.stringify(cp.partialOutput)}` },
+      ]);
     } else if (cp.taskType === 'reflect') {
-      const messages = [
+      result = await callGroq([
         { role: 'system', content: 'You are CozanetOS reflection engine. Analyze the action and outcome.' },
         { role: 'user', content: `Action: ${cp.input.action}\nOutcome: ${cp.input.outcome}\n\nPrevious analysis: ${JSON.stringify(cp.partialOutput)}` },
-      ];
-      result = await callGroq(messages);
+      ]);
     } else {
-      // Generic task — pass through to LLM with context
-      const messages = [
-        { role: 'system', content: 'You are CozanetOS. Process the following task.' },
+      result = await callGroq([
+        { role: 'system', content: 'You are CozanetOS. Process the following task. Continue from where you left off.' },
         { role: 'user', content: `Task type: ${cp.taskType}\nInput: ${JSON.stringify(cp.input)}\nPrevious output: ${JSON.stringify(cp.partialOutput)}` },
-      ];
-      result = await callGroq(messages);
+      ]);
     }
 
-    // Check if we still have time for more work
     const elapsed = Date.now() - startTime;
-    if (elapsed < MAX_SLICE_MS && result) {
+    if (elapsed < MAX_SLICE_MS && result && !result.startsWith('[')) {
       // Task completed within this slice
       cp.status = 'completed';
       cp.partialOutput = result;
       cp.lastCheckpointAt = Date.now();
       await saveCheckpoint(cp);
-      console.log(`[heartbeat] Checkpoint ${cp.id} completed in ${elapsed}ms`);
+      console.log(`[heartbeat] Task ${cp.id} (${taskDesc}) completed in ${elapsed}ms after ${cp.resumeCount} slices`);
     } else {
-      // Ran out of time or no result — checkpoint and pause
+      // Ran out of time or got error response — checkpoint and pause
       cp.status = 'paused';
       cp.partialOutput = result ?? cp.partialOutput;
       cp.stepIndex++;
       cp.lastCheckpointAt = Date.now();
       await saveCheckpoint(cp);
-      console.log(`[heartbeat] Checkpoint ${cp.id} paused after ${elapsed}ms (slice ${cp.stepIndex})`);
+      console.log(`[heartbeat] Task ${cp.id} (${taskDesc}) paused after ${elapsed}ms (slice ${cp.stepIndex})`);
     }
   } catch (err: any) {
     cp.status = 'paused';
     cp.lastError = err.message;
     cp.lastCheckpointAt = Date.now();
     await saveCheckpoint(cp);
-    console.error(`[heartbeat] Checkpoint ${cp.id} error: ${err.message}`);
+    console.error(`[heartbeat] Task ${cp.id} error: ${err.message}`);
   }
 }
 
@@ -248,10 +229,9 @@ export default async function handler(
   req: { method?: string; body?: any; query?: any },
   res: { status: (code: number) => { json: (data: any) => void }; json: (data: any) => void }
 ): Promise<void> {
-  // Only respond to POST (from QStash/cron) or GET (from UptimeRobot)
   const method = req.method || 'GET';
 
-  // Health check endpoint
+  // ── Health check ───────────────────────────────────────────────────
   if (method === 'GET' && req.query?.health === 'true') {
     res.status(200).json({
       status: 'alive',
@@ -263,58 +243,97 @@ export default async function handler(
     return;
   }
 
-  // Submit a new checkpointed task (POST with task data)
+  // ── Status: list all tasks ─────────────────────────────────────────
+  if (method === 'GET' && req.query?.status === 'true') {
+    const all = await getAllCheckpoints();
+    res.status(200).json({
+      total: all.length,
+      active: all.filter(c => c.status === 'paused' || c.status === 'running').length,
+      completed: all.filter(c => c.status === 'completed').length,
+      failed: all.filter(c => c.status === 'failed').length,
+      tasks: all.map(c => ({
+        id: c.id,
+        taskType: c.taskType,
+        description: c.taskDescription || c.taskType,
+        status: c.status,
+        step: c.stepIndex,
+        resumeCount: c.resumeCount,
+        submittedAt: c.submittedAt,
+        lastError: c.lastError,
+      })),
+    });
+    return;
+  }
+
+  // ── Cancel a task ──────────────────────────────────────────────────
+  if (method === 'POST' && req.body?.cancel) {
+    const cpId = req.body.cancel;
+    const raw = await kvGet(`cozanet:checkpoint:${cpId}`);
+    if (!raw) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    const cp = JSON.parse(raw) as Checkpoint;
+    cp.status = 'cancelled';
+    cp.lastError = 'Cancelled by user';
+    await saveCheckpoint(cp);
+    res.status(200).json({ cancelled: true, id: cpId, taskType: cp.taskType });
+    return;
+  }
+
+  // ── Submit a new task ──────────────────────────────────────────────
   if (method === 'POST' && req.body?.submit) {
-    const taskInput = req.body;
+    const t = req.body;
     const checkpoint: Checkpoint = {
       id: `ckpt:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
-      taskId: taskInput.taskId || `task:${Date.now()}`,
-      agentId: taskInput.agentId || 'agent:ceo',
-      taskType: taskInput.taskType || 'think',
-      input: taskInput.input || taskInput,
+      taskId: t.taskId || `task:${Date.now()}`,
+      agentId: t.agentId || 'agent:ceo',
+      taskType: t.taskType || 'think',
+      taskDescription: t.description || t.taskType,
+      input: t.input || t,
       partialOutput: null,
       stepIndex: 0,
       status: 'pending',
       lastCheckpointAt: Date.now(),
+      submittedAt: Date.now(),
       resumeCount: 0,
-      maxResumes: taskInput.maxResumes || 50,
+      maxResumes: t.maxResumes || 100,
       lastError: null,
       agentState: {},
     };
 
     await saveCheckpoint(checkpoint);
 
-    // Immediately try to run the first slice
+    // Run the first slice immediately
     await runSlice(checkpoint);
 
-    // Schedule next ping if still paused
-    const updated = await getPausedCheckpoints();
-    if (updated.length > 0) {
+    // If still paused, self-schedule the next ping via QStash
+    const paused = await getPausedCheckpoints();
+    if (paused.length > 0) {
       await scheduleNextPing();
     }
 
     res.status(200).json({
       submitted: true,
       checkpointId: checkpoint.id,
-      message: 'Task submitted. It will continue processing via heartbeat pings.',
+      taskDescription: checkpoint.taskDescription,
+      message: 'Task started. Pings will continue automatically until it\'s done.',
     });
     return;
   }
 
-  // Heartbeat — resume any paused checkpoints
+  // ── Heartbeat ping (from QStash or external) ────────────────────────
   try {
     const paused = await getPausedCheckpoints();
 
     if (paused.length === 0) {
-      // No work — just a keep-alive ping
+      // No work — don't schedule any more pings
       res.status(200).json({
         hadWork: false,
-        checkpointId: null,
-        completed: false,
-        needsAnotherPing: false,
         pendingCount: 0,
+        message: 'No active tasks. Pinging stopped.',
         timestamp: Date.now(),
-      } as HeartbeatResponse);
+      });
       return;
     }
 
@@ -329,38 +348,37 @@ export default async function handler(
         hadWork: true,
         checkpointId: oldest.id,
         completed: false,
-        needsAnotherPing: false,
+        failed: true,
+        message: `Task "${oldest.taskDescription}" exceeded max attempts`,
         pendingCount: paused.length - 1,
         timestamp: Date.now(),
-      } as HeartbeatResponse);
+      });
       return;
     }
 
     await runSlice(oldest);
 
     // Check if it completed
-    const updated = await getPausedCheckpoints();
-    const stillPaused = updated.some(c => c.id === oldest.id);
-    const completed = !stillPaused;
+    const stillPaused = (await getPausedCheckpoints()).some(c => c.id === oldest.id);
 
-    // Schedule next ping if there's still work
     if (stillPaused) {
+      // Still working — schedule the next ping
       await scheduleNextPing();
     }
+    // If completed, no ping scheduled — pinging stops automatically
 
     res.status(200).json({
       hadWork: true,
       checkpointId: oldest.id,
-      completed,
+      taskDescription: oldest.taskDescription,
+      completed: !stillPaused,
+      step: oldest.stepIndex,
+      resumeCount: oldest.resumeCount,
       needsAnotherPing: stillPaused,
-      nextPingDelayMs: 60000,
-      pendingCount: updated.length,
-      timestamp: Date.now(),
-    } as HeartbeatResponse);
-  } catch (err: any) {
-    res.status(500).json({
-      error: err.message,
+      pendingCount: (await getPausedCheckpoints()).length,
       timestamp: Date.now(),
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, timestamp: Date.now() });
   }
 }
