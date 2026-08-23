@@ -1,15 +1,13 @@
 /**
- * CozanetOS Heartbeat Endpoint — Vercel Serverless Function v4
+ * CozanetOS Heartbeat v5 — Full Agent Engine
  *
- * Upgraded agent engine with:
- *  - Streaming Groq responses (partial output within 8s slices)
- *  - Multi-key rotation (GROQ_API_KEY, _1, _2, _3)
- *  - 24 agent personas matching the orchestrator
- *  - Redis-backed memory loading & saving
- *  - Multi-step reasoning (think -> act -> reflect -> respond)
- *  - Conversation history accumulation across slices
- *  - Progress tracking & graceful timeout handling
- *  - Default maxResumes bumped to 30
+ * Upgrades over v4:
+ *  - Groq built-in tools: browser_search + code_interpreter (server-side)
+ *  - GitHub function calling: create files, push code, create PRs
+ *  - Tool-aware task routing (web tasks use search, code tasks use interpreter)
+ *  - gpt-oss-120b as primary model (supports built-in tools)
+ *  - Local function calling for GitHub operations
+ *  - Structured output with tool results
  */
 
 interface Checkpoint {
@@ -32,133 +30,29 @@ interface Checkpoint {
     thoughts: string[];
     actions: string[];
     startedAt: number;
+    toolResults: any[];
   };
   submittedAt: number;
   taskDescription?: string;
+  useBuiltInTools?: boolean;
+  useGithubTools?: boolean;
 }
 
-interface AgentPersona {
-  id: string;
-  name: string;
-  role: string;
-  systemPrompt: string;
-  taskTypes: string[];
-  model?: string;
+// ── Groq Key ─────────────────────────────────────────────────────────
+
+function getGroqKey(): string {
+  return process.env.GROQ_API_KEY || process.env.GROQ_API_KEY_1 || '';
 }
 
-// ── 24 Agent Personas ────────────────────────────────────────────────
-
-const AGENT_PERSONAS: Record<string, AgentPersona> = {
-  ceo: { id: 'ceo', name: 'CEO Agent', role: 'Strategic decision-maker',
-    systemPrompt: 'You are the CEO Agent of CozanetOS. You make strategic decisions, prioritize tasks, delegate to other agents, and ensure the system operates efficiently. You think in terms of goals, priorities, and resource allocation. Be concise and decisive.',
-    taskTypes: ['decide', 'prioritize', 'delegate', 'plan', 'think'] },
-  research: { id: 'research', name: 'Research Agent', role: 'Information researcher',
-    systemPrompt: 'You are the Research Agent of CozanetOS. You gather information, analyze data, and produce structured research findings. You are thorough, systematic, and cite your reasoning.',
-    taskTypes: ['research', 'analyze', 'investigate', 'study', 'think'] },
-  coding: { id: 'coding', name: 'Coding Agent', role: 'Code generation engine',
-    systemPrompt: 'You are the Coding Agent of CozanetOS. You generate clean, production-ready code. You follow best practices, include error handling, and write modular code. Always wrap code in proper markdown code blocks.',
-    taskTypes: ['build', 'generate_code', 'code', 'refactor', 'debug'],
-    model: 'openai/gpt-oss-120b' },
-  memory: { id: 'memory', name: 'Memory Agent', role: 'Memory manager',
-    systemPrompt: 'You are the Memory Agent of CozanetOS. You manage the system memory — extracting key facts, organizing memories, and retrieving relevant context.',
-    taskTypes: ['memorize', 'recall', 'organize', 'forget', 'think'] },
-  planner: { id: 'planner', name: 'Planner Agent', role: 'Task planner',
-    systemPrompt: 'You are the Planner Agent of CozanetOS. You break down complex goals into actionable steps with dependencies, timelines, and success criteria.',
-    taskTypes: ['plan', 'schedule', 'organize', 'think'] },
-  learning: { id: 'learning', name: 'Learning Agent', role: 'Continuous learner',
-    systemPrompt: 'You are the Learning Agent of CozanetOS. You study materials, extract knowledge, and build understanding. You create structured notes and connect new information to existing knowledge.',
-    taskTypes: ['learn', 'study', 'absorb', 'practice', 'think'] },
-  knowledge: { id: 'knowledge', name: 'Knowledge Agent', role: 'Knowledge base manager',
-    systemPrompt: 'You are the Knowledge Agent of CozanetOS. You manage the knowledge base — indexing, categorizing, and connecting information.',
-    taskTypes: ['index', 'categorize', 'connect', 'query', 'think'] },
-  browser: { id: 'browser', name: 'Browser Agent', role: 'Web navigator',
-    systemPrompt: 'You are the Browser Agent of CozanetOS. You navigate the web, extract content, and interact with web pages.',
-    taskTypes: ['browse', 'scrape', 'navigate', 'extract', 'think'] },
-  review: { id: 'review', name: 'Review Agent', role: 'Code reviewer',
-    systemPrompt: 'You are the Review Agent of CozanetOS. You review code for quality, security, and best practices. You provide actionable feedback.',
-    taskTypes: ['review', 'audit', 'analyze', 'think'] },
-  testing: { id: 'testing', name: 'Testing Agent', role: 'Test engineer',
-    systemPrompt: 'You are the Testing Agent of CozanetOS. You write and run tests, identify edge cases, and ensure code quality.',
-    taskTypes: ['test', 'validate', 'verify', 'think'] },
-  security: { id: 'security', name: 'Security Agent', role: 'Security analyst',
-    systemPrompt: 'You are the Security Agent of CozanetOS. You identify vulnerabilities, assess risks, and recommend security measures.',
-    taskTypes: ['scan', 'assess', 'protect', 'audit', 'think'] },
-  vision: { id: 'vision', name: 'Vision Agent', role: 'Visual analyzer',
-    systemPrompt: 'You are the Vision Agent of CozanetOS. You analyze images, diagrams, and visual data.',
-    taskTypes: ['analyze_image', 'describe', 'visualize', 'think'] },
-  cx7: { id: 'cx7', name: 'CX7 Agent', role: 'UX optimizer',
-    systemPrompt: 'You are the CX7 Agent of CozanetOS. You optimize user experiences, design interfaces, and ensure smooth interactions.',
-    taskTypes: ['design', 'optimize', 'review', 'think'] },
-  device: { id: 'device', name: 'Device Agent', role: 'Device manager',
-    systemPrompt: 'You are the Device Agent of CozanetOS. You manage device connections, status, and interactions.',
-    taskTypes: ['connect', 'manage', 'monitor', 'think'] },
-  api: { id: 'api', name: 'API Agent', role: 'API integrator',
-    systemPrompt: 'You are the API Agent of CozanetOS. You design, build, and integrate APIs.',
-    taskTypes: ['build', 'integrate', 'design', 'code', 'think'] },
-  workflow: { id: 'workflow', name: 'Workflow Agent', role: 'Workflow automator',
-    systemPrompt: 'You are the Workflow Agent of CozanetOS. You design and automate workflows with triggers, conditions, and actions.',
-    taskTypes: ['automate', 'design', 'schedule', 'think'] },
-  scheduler: { id: 'scheduler', name: 'Scheduler Agent', role: 'Task scheduler',
-    systemPrompt: 'You are the Scheduler Agent of CozanetOS. You manage task scheduling, priorities, and dependencies.',
-    taskTypes: ['schedule', 'prioritize', 'organize', 'think'] },
-  email: { id: 'email', name: 'Email Agent', role: 'Email manager',
-    systemPrompt: 'You are the Email Agent of CozanetOS. You draft, send, and manage emails with clear, professional communication.',
-    taskTypes: ['draft', 'send', 'reply', 'summarize', 'think'] },
-  documents: { id: 'documents', name: 'Documents Agent', role: 'Document processor',
-    systemPrompt: 'You are the Documents Agent of CozanetOS. You create, edit, and process documents.',
-    taskTypes: ['create', 'edit', 'format', 'summarize', 'think'] },
-  voice: { id: 'voice', name: 'Voice Agent', role: 'Voice interface',
-    systemPrompt: 'You are the Voice Agent of CozanetOS. You handle speech-to-text, text-to-speech, and voice commands.',
-    taskTypes: ['transcribe', 'speak', 'command', 'think'] },
-  analytics: { id: 'analytics', name: 'Analytics Agent', role: 'Data analyst',
-    systemPrompt: 'You are the Analytics Agent of CozanetOS. You analyze data, generate insights, and create reports.',
-    taskTypes: ['analyze', 'report', 'visualize', 'think'] },
-  database: { id: 'database', name: 'Database Agent', role: 'Database manager',
-    systemPrompt: 'You are the Database Agent of CozanetOS. You manage data schemas, queries, and migrations.',
-    taskTypes: ['query', 'migrate', 'optimize', 'manage', 'think'] },
-  integration: { id: 'integration', name: 'Integration Agent', role: 'Integration specialist',
-    systemPrompt: 'You are the Integration Agent of CozanetOS. You connect external services and APIs.',
-    taskTypes: ['integrate', 'connect', 'configure', 'think'] },
-  automation: { id: 'automation', name: 'Automation Agent', role: 'Automation worker',
-    systemPrompt: 'You are the Automation Agent of CozanetOS. You execute automated tasks and workflows reliably and efficiently.',
-    taskTypes: ['execute', 'automate', 'run', 'process', 'think'] },
-  github: { id: 'github', name: 'GitHub Agent', role: 'GitHub operations',
-    systemPrompt: 'You are the GitHub Agent of CozanetOS. You manage repositories, pull requests, issues, and CI/CD.',
-    taskTypes: ['commit', 'pr', 'issue', 'review', 'merge', 'think'] },
-};
-
-// ── Groq Multi-Key Rotation ───────────────────────────────────────────
-
-function getGroqKeys(): string[] {
-  return [
-    process.env.GROQ_API_KEY,
-    process.env.GROQ_API_KEY_1,
-    process.env.GROQ_API_KEY_2,
-    process.env.GROQ_API_KEY_3,
-  ].filter(Boolean) as string[];
-}
-
-let keyIndex = 0;
-function nextGroqKey(): string {
-  const keys = getGroqKeys();
-  if (keys.length === 0) return '';
-  const key = keys[keyIndex % keys.length];
-  keyIndex++;
-  return key;
-}
-
-// ── Redis Helpers ────────────────────────────────────────────────────
+// ── Redis ────────────────────────────────────────────────────────────
 
 async function kvGet(key: string): Promise<string | null> {
   const url = process.env.UPSTASH_REDIS_URL;
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return null;
   try {
-    const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    return data.result ?? null;
+    const res = await fetch(`${url}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json(); return data.result ?? null;
   } catch { return null; }
 }
 
@@ -169,11 +63,7 @@ async function kvSet(key: string, value: string, ttl?: number): Promise<void> {
   try {
     const pipeline: any[] = [['SET', key, value]];
     if (ttl) pipeline.push(['EXPIRE', key, ttl]);
-    await fetch(`${url}/pipeline`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(pipeline),
-    });
+    await fetch(`${url}/pipeline`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(pipeline) });
   } catch {}
 }
 
@@ -181,11 +71,7 @@ async function kvDel(key: string): Promise<void> {
   const url = process.env.UPSTASH_REDIS_URL;
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return;
-  try {
-    await fetch(`${url}/del/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  } catch {}
+  try { await fetch(`${url}/del/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${token}` } }); } catch {}
 }
 
 async function kvScan(pattern: string): Promise<string[]> {
@@ -193,46 +79,33 @@ async function kvScan(pattern: string): Promise<string[]> {
   const token = process.env.UPSTASH_REDIS_TOKEN;
   if (!url || !token) return [];
   try {
-    const res = await fetch(`${url}/scan/0?match=${encodeURIComponent(pattern)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    return data.result?.[1] ?? [];
+    const res = await fetch(`${url}/scan/0?match=${encodeURIComponent(pattern)}`, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await res.json(); return data.result?.[1] ?? [];
   } catch { return []; }
 }
 
-// ── Memory System ────────────────────────────────────────────────────
+// ── Memory ───────────────────────────────────────────────────────────
 
 async function loadMemories(limit = 10): Promise<string[]> {
   const keys = await kvScan('cozanet:memory:*');
   const memories: string[] = [];
-  const sorted = keys.sort().slice(-limit);
-  for (const key of sorted) {
+  for (const key of keys.sort().slice(-limit)) {
     const raw = await kvGet(key);
-    if (raw) {
-      try {
-        const mem = JSON.parse(raw);
-        memories.push(`- [${mem.category || 'general'}] ${mem.content}`);
-      } catch { memories.push(`- ${raw}`); }
-    }
+    if (raw) { try { const m = JSON.parse(raw); memories.push(`- [${m.category||'general'}] ${m.content}`); } catch { memories.push(`- ${raw}`); } }
   }
   return memories;
 }
 
 async function saveMemory(content: string, category: string): Promise<void> {
-  const key = `cozanet:memory:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-  await kvSet(key, JSON.stringify({ content, category, timestamp: Date.now() }), 604800);
+  await kvSet(`cozanet:memory:${Date.now()}:${Math.random().toString(36).slice(2,8)}`, JSON.stringify({ content, category, timestamp: Date.now() }), 604800);
 }
 
-// ── Checkpoint Operations ─────────────────────────────────────────────
+// ── Checkpoints ──────────────────────────────────────────────────────
 
 async function getAllCheckpoints(): Promise<Checkpoint[]> {
   const keys = await kvScan('cozanet:checkpoint:*');
   const results: Checkpoint[] = [];
-  for (const key of keys) {
-    const raw = await kvGet(key);
-    if (raw) { try { results.push(JSON.parse(raw) as Checkpoint); } catch {} }
-  }
+  for (const key of keys) { const raw = await kvGet(key); if (raw) { try { results.push(JSON.parse(raw)); } catch {} } }
   return results;
 }
 
@@ -244,95 +117,164 @@ async function saveCheckpoint(cp: Checkpoint): Promise<void> {
   await kvSet(`cozanet:checkpoint:${cp.id}`, JSON.stringify(cp), 86400);
 }
 
-// ── Agent Persona Resolution ─────────────────────────────────────────
+// ── GitHub Tool Functions ───────────────────────────────────────────
 
-function resolvePersona(taskType: string, agentId?: string): AgentPersona {
-  if (agentId && AGENT_PERSONAS[agentId]) return AGENT_PERSONAS[agentId];
-  for (const persona of Object.values(AGENT_PERSONAS)) {
-    if (persona.taskTypes.includes(taskType)) return persona;
-  }
-  return AGENT_PERSONAS.ceo;
-}
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GITHUB_ORG = process.env.GITHUB_ORG || 'CozanetOS';
 
-// ── Groq Streaming Call ──────────────────────────────────────────────
-
-async function callGroqStream(
-  messages: any[],
-  model: string,
-  maxTokens: number,
-  onToken: (token: string, isReasoning: boolean) => void
-): Promise<{ full: string; reasoning: string; finishReason: string | null; error: string | null }> {
-  const apiKey = nextGroqKey();
-  if (!apiKey) return { full: '', reasoning: '', finishReason: null, error: 'no-groq-key' };
-
-  try {
-    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, messages, temperature: 0.7, max_tokens: maxTokens, stream: true }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      return { full: '', reasoning: '', finishReason: null, error: `groq-error:${res.status}` };
-    }
-
-    const reader = res.body?.getReader();
-    if (!reader) return { full: '', reasoning: '', finishReason: null, error: 'no-stream-reader' };
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let fullText = '';
-    let reasoningText = '';
-    let finishReason: string | null = null;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') continue;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta;
-          const contentDelta = delta?.content || '';
-          const reasoningDelta = delta?.reasoning || '';
-          if (contentDelta) { fullText += contentDelta; onToken(contentDelta, false); }
-          if (reasoningDelta) { reasoningText += reasoningDelta; onToken(reasoningDelta, true); }
-          if (json.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
-        } catch {}
+// Tool definitions for Groq function calling
+const GITHUB_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "github_create_file",
+      description: "Create or update a file in a GitHub repository. This pushes code directly to a repo.",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string", description: "Repository name (e.g. 'cozanet-os')" },
+          path: { type: "string", description: "File path in the repo (e.g. 'src/index.ts')" },
+          content: { type: "string", description: "The file content to write" },
+          branch: { type: "string", description: "Branch name (default: main)", default: "main" },
+          message: { type: "string", description: "Commit message" }
+        },
+        required: ["repo", "path", "content", "message"]
       }
     }
-    return { full: fullText, reasoning: reasoningText, finishReason, error: null };
-  } catch (err: any) {
-    return { full: '', reasoning: '', finishReason: null, error: `groq-failed:${err.message}` };
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_read_file",
+      description: "Read a file from a GitHub repository",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string", description: "Repository name" },
+          path: { type: "string", description: "File path" },
+          branch: { type: "string", description: "Branch (default: main)" }
+        },
+        required: ["repo", "path"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_list_repos",
+      description: "List repositories in the CozanetOS organization",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_create_branch",
+      description: "Create a new branch in a repository",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          branch: { type: "string", description: "New branch name" },
+          from: { type: "string", description: "Base branch (default: main)" }
+        },
+        required: ["repo", "branch"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_create_pr",
+      description: "Create a pull request",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string" },
+          head: { type: "string", description: "Source branch" },
+          base: { type: "string", description: "Target branch (default: main)" }
+        },
+        required: ["repo", "title", "head"]
+      }
+    }
   }
-}
+];
 
-// ── QStash Self-Scheduling ────────────────────────────────────────────
+// GitHub function executor
+async function executeGithubFunction(name: string, args: any): Promise<string> {
+  const headers: Record<string, string> = { 'Authorization': `token ${GITHUB_TOKEN}`, 'Content-Type': 'application/json', 'Accept': 'application/vnd.github.v3+json' };
+  const base = `https://api.github.com/repos/${GITHUB_ORG}`;
 
-async function scheduleNextPing(): Promise<void> {
-  const qstashUrl = process.env.QSTASH_URL;
-  const qstashToken = process.env.QSTASH_TOKEN;
-  const heartbeatUrl = process.env.HEARTBEAT_URL;
-  if (!qstashUrl || !qstashToken || !heartbeatUrl) return;
   try {
-    await fetch(`${qstashUrl}/publish/${heartbeatUrl}`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${qstashToken}`, 'Content-Type': 'application/json', 'Delay': '60s' },
-      body: JSON.stringify({ source: 'keepalive-auto' }),
-    });
-    console.log('[heartbeat] Scheduled next ping via QStash (60s)');
-  } catch (err) {
-    console.error('[heartbeat] Failed to schedule next ping:', err);
+    switch (name) {
+      case 'github_create_file': {
+        let { repo, path, content, branch = 'main', message } = args;
+        // Get current file SHA if it exists
+        const shaRes = await fetch(`${base}/${repo}/contents/${encodeURIComponent(path)}?ref=${branch}`, { headers });
+        let sha: string | undefined;
+        if (shaRes.ok) { const shaData = await shaRes.json(); sha = shaData.sha; }
+        const body = JSON.stringify({ message, content: Buffer.from(content).toString('base64'), branch, sha });
+        let res = await fetch(`${base}/${repo}/contents/${encodeURIComponent(path)}`, { method: 'PUT', headers, body });
+        let data = await res.json();
+        if (!res.ok && (data.message?.includes('pull request') || data.message?.includes('protected'))) {
+          // Branch protection — auto-create a feature branch
+          const featBranch = `agent/${Date.now()}`;
+          const refRes = await fetch(`${base}/${repo}/git/ref/heads/main`, { headers });
+          if (refRes.ok) {
+            const refData = await refRes.json();
+            await fetch(`${base}/${repo}/git/refs`, { method: 'POST', headers, body: JSON.stringify({ ref: `refs/heads/${featBranch}`, sha: refData.object.sha }) });
+            const body2 = JSON.stringify({ message, content: Buffer.from(content).toString('base64'), branch: featBranch });
+            res = await fetch(`${base}/${repo}/contents/${encodeURIComponent(path)}`, { method: 'PUT', headers, body: body2 });
+            data = await res.json();
+            if (res.ok) {
+              const prRes = await fetch(`${base}/${repo}/pulls`, { method: 'POST', headers, body: JSON.stringify({ title: message, head: featBranch, base: 'main', body: 'Auto-generated by CozanetOS Agent' }) });
+              const prData = await prRes.json();
+              return `File pushed to branch ${featBranch} and PR created: ${prData.html_url || prData.number}`;
+            }
+          }
+        }
+        return res.ok ? `File pushed: ${path} in ${repo}@${branch} (commit: ${data.commit?.sha?.slice(0,7)})` : `Error: ${data.message}`;
+      }
+      case 'github_read_file': {
+        const { repo, path, branch = 'main' } = args;
+        const res = await fetch(`${base}/${repo}/contents/${encodeURIComponent(path)}?ref=${branch}`, { headers });
+        if (!res.ok) return `Error: file not found`;
+        const data = await res.json();
+        const content = Buffer.from(data.content, 'base64').toString('utf-8');
+        return content.slice(0, 4000); // Limit response size
+      }
+      case 'github_list_repos': {
+        const res = await fetch(`https://api.github.com/orgs/${GITHUB_ORG}/repos?per_page=50`, { headers });
+        const data = await res.json();
+        return data.map((r: any) => `${r.name} (${r.language || '?'}, ${r.private ? 'private' : 'public'})`).join('\n');
+      }
+      case 'github_create_branch': {
+        const { repo, branch, from = 'main' } = args;
+        const refRes = await fetch(`${base}/${repo}/git/ref/heads/${from}`, { headers });
+        if (!refRes.ok) return `Error: base branch ${from} not found`;
+        const refData = await refRes.json();
+        const sha = refData.object.sha;
+        const res = await fetch(`${base}/${repo}/git/refs`, { method: 'POST', headers, body: JSON.stringify({ ref: `refs/heads/${branch}`, sha }) });
+        const data = await res.json();
+        return res.ok ? `Branch ${branch} created in ${repo} from ${from}` : `Error: ${data.message}`;
+      }
+      case 'github_create_pr': {
+        const { repo, title, body = '', head, base = 'main' } = args;
+        const res = await fetch(`${base}/${repo}/pulls`, { method: 'POST', headers, body: JSON.stringify({ title, body, head, base }) });
+        const data = await res.json();
+        return res.ok ? `PR #${data.number} created: ${data.html_url}` : `Error: ${data.message}`;
+      }
+      default:
+        return `Unknown function: ${name}`;
+    }
+  } catch (err: any) {
+    return `Execution error: ${err.message}`;
   }
 }
 
-// ── Multi-Step Agent Slice Runner ─────────────────────────────────────
+// ── Agent Slice Runner ───────────────────────────────────────────────
 
 async function runSlice(cp: Checkpoint): Promise<void> {
   const MAX_SLICE_MS = 8000;
@@ -344,28 +286,19 @@ async function runSlice(cp: Checkpoint): Promise<void> {
   await saveCheckpoint(cp);
 
   try {
-    const persona = resolvePersona(cp.taskType, cp.agentId);
-    const model = persona.model || 'openai/gpt-oss-120b';
+    const model = 'openai/gpt-oss-120b';
     const taskDesc = cp.taskDescription || cp.taskType;
 
-    // Initialize agent state on first slice
     if (cp.resumeCount === 1) {
-      cp.agentState = {
-        messages: [], phase: 'think', progress: 0,
-        thoughts: [], actions: [], startedAt: Date.now(),
-      };
+      cp.agentState = { messages: [], phase: 'think', progress: 0, thoughts: [], actions: [], startedAt: Date.now(), toolResults: [] };
       cp.partialOutput = '';
     }
 
-    // Load memories for context
     const memories = await loadMemories(5);
-    const memoryContext = memories.length > 0
-      ? `\n\n## Relevant Memories\n${memories.join('\n')}` : '';
+    const memoryContext = memories.length > 0 ? `\n\n## Relevant Memories\n${memories.join('\n')}` : '';
 
-    // Build system prompt with persona + context
-    const systemPrompt = `${persona.systemPrompt}
-
-You are CozanetOS ${persona.name}. You work in time-sliced chunks (max 8s per slice) and may be resumed multiple times. Always produce useful output so progress accumulates.
+    // Build system prompt
+    let systemPrompt = `You are CozanetOS AI Agent. You work in time-sliced chunks (max 8s per slice). You may be resumed multiple times. Always produce useful output.
 
 ## Current Context
 - Task: ${taskDesc}
@@ -373,70 +306,136 @@ You are CozanetOS ${persona.name}. You work in time-sliced chunks (max 8s per sl
 - Slice #: ${cp.resumeCount}
 - Phase: ${cp.agentState.phase}
 - Progress: ${cp.agentState.progress}%
-- Previous thoughts: ${cp.agentState.thoughts.length > 0 ? cp.agentState.thoughts.slice(-3).join(' -> ') : 'none yet'}
 - Previous output length: ${cp.partialOutput.length} chars${memoryContext}
 
 ## Instructions
-- If this is the first slice, analyze the task and start working.
-- If resuming, continue from where you left off — don't repeat yourself.
+- If first slice, analyze and start working. If resuming, continue — don't repeat.
 - Be concise but thorough. Output your work directly.
-- If the task is complete, end your response with "[DONE]" on a new line.
-- If you need more time, just output what you have — the next slice will continue.`;
+- End with "[DONE]" on a new line when the task is complete.
+- When pushing code to GitHub, the agent automatically creates a branch and PR if the repo has branch protection.`;
 
-    // Build conversation messages
+    // Build messages
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
-    const history = cp.agentState.messages.slice(-8);
-    for (const msg of history) messages.push(msg);
+    for (const msg of cp.agentState.messages.slice(-8)) messages.push(msg);
 
     const userPrompt = cp.input.goal || cp.input.task || cp.input.description || JSON.stringify(cp.input);
-    const continuationHint = cp.partialOutput
-      ? `\n\n## Previous Output (continue from here)\n${cp.partialOutput.slice(-2000)}` : '';
+    const continuationHint = cp.partialOutput ? `\n\n## Previous Output (continue from here)\n${cp.partialOutput.slice(-2000)}` : '';
     messages.push({ role: 'user', content: `${userPrompt}${continuationHint}` });
 
     // Check time budget
     const remainingMs = startTime + MAX_SLICE_MS - Date.now();
-    if (remainingMs <= 1000) {
-      cp.status = 'paused';
-      cp.lastCheckpointAt = Date.now();
-      await saveCheckpoint(cp);
-      return;
+    if (remainingMs <= 1000) { cp.status = 'paused'; cp.lastCheckpointAt = Date.now(); await saveCheckpoint(cp); return; }
+
+    // Build request options
+    const apiKey = getGroqKey();
+    if (!apiKey) { cp.status = 'paused'; cp.lastError = 'no-groq-key'; cp.lastCheckpointAt = Date.now(); await saveCheckpoint(cp); return; }
+
+    // Determine which tools to use
+    const useBuiltInTools = cp.useBuiltInTools !== false; // Default true
+    const useGithubTools = cp.useGithubTools !== false && GITHUB_TOKEN; // Default true if token exists
+
+    // Determine if this task needs built-in tools
+    const needsWebSearch = ['research', 'analyze', 'investigate', 'browse', 'study'].some(t => cp.taskType.includes(t));
+    const needsCodeExec = ['code', 'build', 'calculate', 'compute', 'debug'].some(t => cp.taskType.includes(t));
+    const needsGithub = ['github', 'push', 'deploy', 'commit', 'pr', 'repo'].some(t => cp.taskType.includes(t) || taskDesc.toLowerCase().includes(t));
+
+    const requestBody: any = {
+      model,
+      messages,
+      temperature: 0.7,
+      max_tokens: 3000,
+    };
+
+    // Add built-in tools for gpt-oss-120b
+    const builtInTools: any[] = [];
+    if (useBuiltInTools && (needsWebSearch || needsCodeExec)) {
+      if (needsWebSearch) builtInTools.push({ type: "browser_search" });
+      if (needsCodeExec) builtInTools.push({ type: "code_interpreter" });
+    }
+    // Always allow both tools for general tasks (model decides)
+    if (useBuiltInTools && builtInTools.length === 0 && cp.resumeCount === 1) {
+      builtInTools.push({ type: "browser_search" }, { type: "code_interpreter" });
     }
 
-    const maxTokens = Math.min(Math.floor(remainingMs / 50), 1500);
-    let streamedText = '';
-    let streamedReasoning = '';
+    // Add GitHub function calling tools
+    if (useGithubTools && (needsGithub || cp.resumeCount === 1)) {
+      requestBody.tools = [...builtInTools, ...GITHUB_TOOLS];
+    } else if (builtInTools.length > 0) {
+      requestBody.tools = builtInTools;
+    }
 
-    const result = await callGroqStream(messages, model, maxTokens, (token, isReasoning) => {
-      if (isReasoning) streamedReasoning += token;
-      else streamedText += token;
+    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(requestBody),
     });
 
     const elapsed = Date.now() - startTime;
 
-    if (result.error) {
-      cp.agentState.thoughts.push(`Error in slice ${cp.resumeCount}: ${result.error}`);
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      cp.agentState.thoughts.push(`Error in slice ${cp.resumeCount}: ${res.status}`);
       cp.status = 'paused';
-      cp.lastError = result.error;
+      cp.lastError = `groq-error:${res.status}`;
       cp.lastCheckpointAt = Date.now();
       await saveCheckpoint(cp);
       return;
     }
 
-    const isComplete = result.full.includes('[DONE]') || result.finishReason === 'stop';
-    let newOutput = streamedText.replace('[DONE]', '').trimEnd();
+    const data = await res.json();
+    const msg = data.choices?.[0]?.message;
+    let newOutput = msg?.content || '';
+    const isComplete = newOutput.includes('[DONE]') || data.choices?.[0]?.finish_reason === 'stop';
+    newOutput = newOutput.replace('[DONE]', '').trimEnd();
+
+    // Handle function calls (GitHub operations)
+    if (msg?.tool_calls && msg.tool_calls.length > 0) {
+      messages.push({ role: 'assistant', content: newOutput, tool_calls: msg.tool_calls });
+      for (const toolCall of msg.tool_calls) {
+        const fnName = toolCall.function.name;
+        let fnArgs: any = {};
+        try { fnArgs = JSON.parse(toolCall.function.arguments); } catch {}
+
+        const result = await executeGithubFunction(fnName, fnArgs);
+        cp.agentState.toolResults.push({ tool: fnName, args: fnArgs, result: result.slice(0, 500) });
+        cp.agentState.actions.push(`${fnName}(${JSON.stringify(fnArgs).slice(0, 100)}) -> ${result.slice(0, 200)}`);
+        messages.push({ role: 'tool', tool_call_id: toolCall.id, name: fnName, content: result });
+      }
+
+      // Make a follow-up call with tool results
+      requestBody.messages = messages;
+      requestBody.max_tokens = 2000;
+      const res2 = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(requestBody),
+      });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        const msg2 = data2.choices?.[0]?.message;
+        if (msg2?.content) newOutput += '\n' + msg2.content.replace('[DONE]', '').trimEnd();
+      }
+    }
+
+    // Check for built-in tool results (executed_tools from compound)
+    if (msg?.executed_tools && msg.executed_tools.length > 0) {
+      for (const tool of msg.executed_tools) {
+        cp.agentState.toolResults.push({ type: tool.type, args: tool.arguments, result: str(tool.output).slice(0, 500) });
+        cp.agentState.actions.push(`built-in:${tool.type}`);
+      }
+    }
+
+    // Accumulate output
     if (cp.partialOutput && !cp.partialOutput.endsWith('\n')) cp.partialOutput += '\n';
     cp.partialOutput += newOutput;
 
-    // Update agent state
+    // Update conversation history
     cp.agentState.messages.push(
       { role: 'user', content: userPrompt + continuationHint },
       { role: 'assistant', content: newOutput },
     );
 
     // Phase progression
-    if (streamedReasoning) {
-      cp.agentState.thoughts.push(streamedReasoning.slice(0, 500));
-    }
     if (cp.agentState.phase === 'think') {
       cp.agentState.thoughts.push(newOutput.slice(0, 200));
       cp.agentState.phase = 'act';
@@ -457,15 +456,15 @@ You are CozanetOS ${persona.name}. You work in time-sliced chunks (max 8s per sl
       cp.status = 'completed';
       cp.lastCheckpointAt = Date.now();
       await saveCheckpoint(cp);
-      await saveMemory(`Completed task "${taskDesc}" (${cp.taskType}) — ${cp.partialOutput.slice(0, 200)}...`, 'task-history');
-      console.log(`[heartbeat] Task ${cp.id} (${taskDesc}) completed in ${elapsed}ms after ${cp.resumeCount} slices`);
+      await saveMemory(`Completed "${taskDesc}" (${cp.taskType}) — ${cp.partialOutput.slice(0, 200)}...`, 'task-history');
+      console.log(`[heartbeat] Task ${cp.id} completed in ${elapsed}ms after ${cp.resumeCount} slices`);
     } else {
       cp.status = 'paused';
       cp.stepIndex++;
       cp.lastError = null;
       cp.lastCheckpointAt = Date.now();
       await saveCheckpoint(cp);
-      console.log(`[heartbeat] Task ${cp.id} (${taskDesc}) paused after ${elapsed}ms (slice ${cp.stepIndex}, ${newOutput.length} new chars)`);
+      console.log(`[heartbeat] Task ${cp.id} paused after ${elapsed}ms (slice ${cp.stepIndex})`);
     }
   } catch (err: any) {
     cp.status = 'paused';
@@ -475,49 +474,60 @@ You are CozanetOS ${persona.name}. You work in time-sliced chunks (max 8s per sl
   }
 }
 
-// ── Main Handler ──────────────────────────────────────────────────────
+function str(v: any): string { return typeof v === 'string' ? v : JSON.stringify(v); }
 
-export default async function handler(
-  req: { method?: string; body?: any; query?: any },
-  res: { status: (code: number) => { json: (data: any) => void }; json: (data: any) => void }
-): Promise<void> {
+// ── QStash ──────────────────────────────────────────────────────────
+
+async function scheduleNextPing(): Promise<void> {
+  const qstashUrl = process.env.QSTASH_URL;
+  const qstashToken = process.env.QSTASH_TOKEN;
+  const heartbeatUrl = process.env.HEARTBEAT_URL;
+  if (!qstashUrl || !qstashToken || !heartbeatUrl) return;
+  try {
+    await fetch(`${qstashUrl}/publish/${heartbeatUrl}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${qstashToken}`, 'Content-Type': 'application/json', 'Delay': '60s' },
+      body: JSON.stringify({ source: 'keepalive-auto' }),
+    });
+  } catch {}
+}
+
+// ── Handler ─────────────────────────────────────────────────────────
+
+export default async function handler(req: { method?: string; body?: any; query?: any }, res: { status: (c: number) => { json: (d: any) => void }; json: (d: any) => void }): Promise<void> {
   const method = req.method || 'GET';
 
-  // Health check
   if (method === 'GET' && req.query?.health === 'true') {
-    const keys = getGroqKeys();
     res.status(200).json({
-      status: 'alive', timestamp: Date.now(), version: 'v4-upgraded',
+      status: 'alive', version: 'v5-agent', timestamp: Date.now(),
       hasRedis: !!process.env.UPSTASH_REDIS_URL,
-      hasGroq: keys.length > 0, groqKeys: keys.length,
+      hasGroq: !!getGroqKey(),
       hasQStash: !!process.env.QSTASH_URL,
-      agentPersonas: Object.keys(AGENT_PERSONAS).length,
+      hasGithub: !!GITHUB_TOKEN,
+      githubOrg: GITHUB_ORG,
+      builtInTools: ['browser_search', 'code_interpreter'],
+      githubTools: GITHUB_TOOLS.map(t => t.function.name),
     });
     return;
   }
 
-  // Status: list all tasks
   if (method === 'GET' && req.query?.status === 'true') {
     const all = await getAllCheckpoints();
     res.status(200).json({
       total: all.length,
       active: all.filter(c => c.status === 'paused' || c.status === 'running').length,
       completed: all.filter(c => c.status === 'completed').length,
-      failed: all.filter(c => c.status === 'failed').length,
       tasks: all.map(c => ({
-        id: c.id, agentId: c.agentId, taskType: c.taskType,
-        description: c.taskDescription, status: c.status,
-        step: c.stepIndex, resumeCount: c.resumeCount,
-        progress: c.agentState?.progress || 0,
-        phase: c.agentState?.phase || 'unknown',
+        id: c.id, taskType: c.taskType, description: c.taskDescription,
+        status: c.status, step: c.stepIndex, resumeCount: c.resumeCount,
+        progress: c.agentState?.progress || 0, phase: c.agentState?.phase || 'unknown',
         outputLength: c.partialOutput?.length || 0,
-        submittedAt: c.submittedAt, lastError: c.lastError,
+        toolResults: c.agentState?.toolResults?.length || 0,
       })),
     });
     return;
   }
 
-  // Get task output
   if (method === 'GET' && req.query?.task) {
     const all = await getAllCheckpoints();
     const task = all.find(c => c.id === req.query.task);
@@ -529,144 +539,92 @@ export default async function handler(
         output: task.partialOutput,
         thoughts: task.agentState?.thoughts || [],
         actions: task.agentState?.actions || [],
-        resumeCount: task.resumeCount, step: task.stepIndex,
+        toolResults: task.agentState?.toolResults || [],
+        resumeCount: task.resumeCount,
       });
     } else { res.status(404).json({ error: 'Task not found' }); }
     return;
   }
 
-  // List available agents
-  if (method === 'GET' && req.query?.agents === 'true') {
-    res.status(200).json({
-      count: Object.keys(AGENT_PERSONAS).length,
-      agents: Object.values(AGENT_PERSONAS).map(a => ({
-        id: a.id, name: a.name, role: a.role, taskTypes: a.taskTypes,
-      })),
-    });
-    return;
-  }
-
-  // POST: Submit / Ping / Cancel / Remember / Recall / Cleanup
   if (method === 'POST' && req.body) {
     const body = req.body;
 
-    // Submit new task
     if (body.submit) {
-      const id = `ckpt:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
-      const maxResumes = body.maxResumes || 30;
-      const persona = resolvePersona(body.taskType, body.agentId);
-
+      const id = `ckpt:${Date.now()}:${Math.random().toString(36).slice(2,8)}`;
       const cp: Checkpoint = {
         id, taskId: body.taskId || id,
-        agentId: body.agentId || persona.id,
+        agentId: body.agentId || 'agent',
         taskType: body.taskType || 'think',
         input: body.input || body.description || {},
         partialOutput: '', stepIndex: 0, status: 'pending',
         lastCheckpointAt: Date.now(), resumeCount: 0,
-        maxResumes, lastError: null,
-        agentState: { messages: [], phase: 'think', progress: 0, thoughts: [], actions: [], startedAt: Date.now() },
+        maxResumes: body.maxResumes || 30, lastError: null,
+        agentState: { messages: [], phase: 'think', progress: 0, thoughts: [], actions: [], startedAt: Date.now(), toolResults: [] },
         submittedAt: Date.now(),
         taskDescription: body.description || body.taskType || 'Unnamed task',
+        useBuiltInTools: body.useBuiltInTools !== false,
+        useGithubTools: body.useGithubTools !== false,
       };
-
       await saveCheckpoint(cp);
       await runSlice(cp);
       await scheduleNextPing();
-
       res.status(200).json({
         submitted: true, checkpointId: id,
-        agentId: cp.agentId, agentName: persona.name,
-        taskDescription: cp.taskDescription, maxResumes,
-        message: `Task started with ${persona.name}. Pings will continue automatically until done.`,
+        taskDescription: cp.taskDescription, maxResumes: cp.maxResumes,
+        builtInTools: cp.useBuiltInTools,
+        githubTools: cp.useGithubTools && !!GITHUB_TOKEN,
+        message: 'Task started. Agent has web search, code execution, and GitHub push capabilities.',
       });
       return;
     }
 
-    // Heartbeat ping
     if (body.source === 'keepalive-auto' || body.source === 'manual-test' || body.source === 'keepalive') {
       const paused = await getPausedCheckpoints();
       if (paused.length === 0) {
-        res.status(200).json({ hadWork: false, pendingCount: 0, message: 'No active tasks. Pinging stopped.', timestamp: Date.now() });
+        res.status(200).json({ hadWork: false, pendingCount: 0, message: 'No active tasks.' });
         return;
       }
-
       paused.sort((a, b) => a.lastCheckpointAt - b.lastCheckpointAt);
       const cp = paused[0];
-
       if (cp.resumeCount >= cp.maxResumes) {
-        cp.status = 'failed';
-        cp.lastError = `Exceeded max resume attempts (${cp.maxResumes})`;
-        cp.lastCheckpointAt = Date.now();
-        await saveCheckpoint(cp);
-        res.status(200).json({ hadWork: false, failed: cp.id, reason: cp.lastError, pendingCount: paused.length - 1 });
+        cp.status = 'failed'; cp.lastError = `Exceeded max (${cp.maxResumes})`;
+        cp.lastCheckpointAt = Date.now(); await saveCheckpoint(cp);
+        res.status(200).json({ hadWork: false, failed: cp.id, reason: cp.lastError });
         return;
       }
-
       await runSlice(cp);
       const stillPaused = await getPausedCheckpoints();
-      const needsMore = stillPaused.length > 0;
-      if (needsMore) await scheduleNextPing();
-
+      if (stillPaused.length > 0) await scheduleNextPing();
       res.status(200).json({
-        hadWork: true, checkpointId: cp.id,
-        taskDescription: cp.taskDescription, agentId: cp.agentId,
-        completed: cp.status === 'completed', status: cp.status,
-        step: cp.stepIndex, resumeCount: cp.resumeCount,
+        hadWork: true, checkpointId: cp.id, completed: cp.status === 'completed',
+        status: cp.status, step: cp.stepIndex, resumeCount: cp.resumeCount,
         progress: cp.agentState?.progress || 0,
-        phase: cp.agentState?.phase || 'unknown',
         outputPreview: cp.partialOutput?.slice(-200) || '',
-        needsAnotherPing: needsMore, pendingCount: stillPaused.length,
-        timestamp: Date.now(),
+        toolResults: cp.agentState?.toolResults || [],
+        needsAnotherPing: stillPaused.length > 0, pendingCount: stillPaused.length,
       });
       return;
     }
 
-    // Cancel task
     if (body.cancel) {
       const all = await getAllCheckpoints();
       const cp = all.find(c => c.id === body.cancel);
-      if (cp) {
-        cp.status = 'cancelled';
-        cp.lastError = 'Cancelled by user';
-        cp.lastCheckpointAt = Date.now();
-        await saveCheckpoint(cp);
-        res.status(200).json({ cancelled: true, id: cp.id, taskType: cp.taskType });
-      } else { res.status(404).json({ error: 'Task not found' }); }
+      if (cp) { cp.status = 'cancelled'; cp.lastError = 'Cancelled'; cp.lastCheckpointAt = Date.now(); await saveCheckpoint(cp); res.status(200).json({ cancelled: true, id: cp.id }); }
+      else { res.status(404).json({ error: 'Not found' }); }
       return;
     }
 
-    // Save memory
-    if (body.remember) {
-      await saveMemory(body.remember, body.category || 'general');
-      res.status(200).json({ saved: true, category: body.category || 'general' });
-      return;
-    }
-
-    // Load memories
-    if (body.recall) {
-      const memories = await loadMemories(body.limit || 20);
-      res.status(200).json({ memories, count: memories.length });
-      return;
-    }
-
-    // Cleanup
+    if (body.remember) { await saveMemory(body.remember, body.category || 'general'); res.status(200).json({ saved: true }); return; }
+    if (body.recall) { const m = await loadMemories(body.limit || 20); res.status(200).json({ memories: m, count: m.length }); return; }
     if (body.cleanup) {
-      const all = await getAllCheckpoints();
-      let deleted = 0;
-      for (const cp of all) {
-        if (['completed', 'failed', 'cancelled'].includes(cp.status)) {
-          await kvDel(`cozanet:checkpoint:${cp.id}`);
-          deleted++;
-        }
-      }
-      res.status(200).json({ cleaned: deleted, remaining: all.length - deleted });
-      return;
+      const all = await getAllCheckpoints(); let deleted = 0;
+      for (const cp of all) { if (['completed','failed','cancelled'].includes(cp.status)) { await kvDel(`cozanet:checkpoint:${cp.id}`); deleted++; } }
+      res.status(200).json({ cleaned: deleted, remaining: all.length - deleted }); return;
     }
   }
 
-  // Fallback
   res.status(200).json({
-    status: 'alive', version: 'v4-upgraded',
-    message: 'CozanetOS Heartbeat v4. Endpoints: ?health=true, ?status=true, ?agents=true, ?task=<id>, POST {submit/cancel/remember/recall/cleanup}',
+    status: 'alive', version: 'v5-agent',
+    message: 'CozanetOS Heartbeat v5. Capabilities: web search, code execution, GitHub push. Endpoints: ?health=true, ?status=true, ?task=<id>, POST {submit/cancel/remember/recall/cleanup}',
   });
 }
