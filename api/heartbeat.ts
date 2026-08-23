@@ -36,6 +36,7 @@ interface Checkpoint {
   taskDescription?: string;
   useBuiltInTools?: boolean;
   useGithubTools?: boolean;
+  attachedFiles?: string[];
 }
 
 // ── Groq Key ─────────────────────────────────────────────────────────
@@ -100,7 +101,55 @@ async function saveMemory(content: string, category: string): Promise<void> {
   await kvSet(`cozanet:memory:${Date.now()}:${Math.random().toString(36).slice(2,8)}`, JSON.stringify({ content, category, timestamp: Date.now() }), 604800);
 }
 
-// ── Checkpoints ──────────────────────────────────────────────────────
+
+// ── File Storage ────────────────────────────────────────────────────
+
+async function saveFile(filename: string, content: string, taskId?: string): Promise<string> {
+  const fileId = `cozanet:file:${Date.now()}:${filename}`;
+  // Store in chunks if large (Redis has 1MB limit per key)
+  const maxChunk = 500000; // 500KB per chunk
+  if (content.length > maxChunk) {
+    const chunks: string[] = [];
+    for (let i = 0; i < content.length; i += maxChunk) {
+      chunks.push(content.slice(i, i + maxChunk));
+    }
+    await kvSet(`${fileId}:meta`, JSON.stringify({ filename, size: content.length, chunks: chunks.length, taskId }), 86400);
+    for (let i = 0; i < chunks.length; i++) {
+      await kvSet(`${fileId}:chunk:${i}`, chunks[i], 86400);
+    }
+  } else {
+    await kvSet(`${fileId}:meta`, JSON.stringify({ filename, size: content.length, chunks: 1, taskId }), 86400);
+    await kvSet(`${fileId}:chunk:0`, content, 86400);
+  }
+  return fileId;
+}
+
+async function loadFile(fileId: string): Promise<{ filename: string; content: string; size: number } | null> {
+  const metaRaw = await kvGet(`${fileId}:meta`);
+  if (!metaRaw) return null;
+  const meta = JSON.parse(metaRaw);
+  let content = '';
+  for (let i = 0; i < meta.chunks; i++) {
+    const chunk = await kvGet(`${fileId}:chunk:${i}`);
+    if (chunk) content += chunk;
+  }
+  return { filename: meta.filename, content, size: meta.size };
+}
+
+async function listFiles(): Promise<any[]> {
+  const keys = await kvScan('cozanet:file:*:meta');
+  const files: any[] = [];
+  for (const key of keys) {
+    const raw = await kvGet(key);
+    if (raw) {
+      try { files.push(JSON.parse(raw)); } catch {}
+    }
+  }
+  return files;
+}
+
+// ── Checkpoints ──────────────────────────────────────────────
+
 
 async function getAllCheckpoints(): Promise<Checkpoint[]> {
   const keys = await kvScan('cozanet:checkpoint:*');
@@ -297,6 +346,17 @@ async function runSlice(cp: Checkpoint): Promise<void> {
     const memories = await loadMemories(5);
     const memoryContext = memories.length > 0 ? `\n\n## Relevant Memories\n${memories.join('\n')}` : '';
 
+    // Load attached files
+    let fileContext = '';
+    if (cp.attachedFiles && cp.attachedFiles.length > 0) {
+      const fileContents: string[] = [];
+      for (const fid of cp.attachedFiles) {
+        const file = await loadFile(fid);
+        if (file) fileContents.push(`### ${file.filename} (${file.size} bytes)\n\n\n${file.content.slice(0, 8000)}${file.content.length > 8000 ? '\n...[truncated]' : ''}`);
+      }
+      if (fileContents.length > 0) fileContext = `\n\n## Attached Files\n${fileContents.join('\n\n')}`;
+    }
+
     // Build system prompt
     let systemPrompt = `You are CozanetOS AI Agent. You work in time-sliced chunks (max 8s per slice). You may be resumed multiple times. Always produce useful output.
 
@@ -312,7 +372,7 @@ async function runSlice(cp: Checkpoint): Promise<void> {
 - If first slice, analyze and start working. If resuming, continue — don't repeat.
 - Be concise but thorough. Output your work directly.
 - End with "[DONE]" on a new line when the task is complete.
-- When pushing code to GitHub, the agent automatically creates a branch and PR if the repo has branch protection.`;
+- When pushing code to GitHub, the agent automatically creates a branch and PR if the repo has branch protection.` + fileContext;
 
     // Build messages
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
@@ -534,6 +594,8 @@ export default async function handler(req: { method?: string; body?: any; query?
       githubOrg: GITHUB_ORG,
       builtInTools: ['browser_search', 'code_interpreter'],
       githubTools: GITHUB_TOOLS.map(t => t.function.name),
+      fileUpload: true,
+      maxFileSize: '5MB',
     });
     return;
   }
@@ -583,6 +645,7 @@ export default async function handler(req: { method?: string; body?: any; query?
         agentId: body.agentId || 'agent',
         taskType: body.taskType || 'think',
         input: body.input || body.description || {},
+        attachedFiles: body.files || [],
         partialOutput: '', stepIndex: 0, status: 'pending',
         lastCheckpointAt: Date.now(), resumeCount: 0,
         maxResumes: body.maxResumes || 30, lastError: null,
@@ -641,6 +704,24 @@ export default async function handler(req: { method?: string; body?: any; query?
       return;
     }
 
+    if (body.uploadFile) {
+      const { filename, content, taskId } = body.uploadFile;
+      if (!filename || !content) { res.status(400).json({ error: 'filename and content required' }); return; }
+      const fileId = await saveFile(filename, content, taskId);
+      res.status(200).json({ uploaded: true, fileId, filename, size: content.length });
+      return;
+    }
+    if (body.listFiles) {
+      const files = await listFiles();
+      res.status(200).json({ files, count: files.length });
+      return;
+    }
+    if (body.readFile) {
+      const file = await loadFile(body.readFile);
+      if (file) res.status(200).json(file);
+      else res.status(404).json({ error: 'File not found' });
+      return;
+    }
     if (body.remember) { await saveMemory(body.remember, body.category || 'general'); res.status(200).json({ saved: true }); return; }
     if (body.recall) { const m = await loadMemories(body.limit || 20); res.status(200).json({ memories: m, count: m.length }); return; }
     if (body.cleanup) {
