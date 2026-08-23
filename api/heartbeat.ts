@@ -319,8 +319,10 @@ async function runSlice(cp: Checkpoint): Promise<void> {
     for (const msg of cp.agentState.messages.slice(-8)) messages.push(msg);
 
     const userPrompt = cp.input.goal || cp.input.task || cp.input.description || JSON.stringify(cp.input);
-    const continuationHint = cp.partialOutput ? `\n\n## Previous Output (continue from here)\n${cp.partialOutput.slice(-2000)}` : '';
-    messages.push({ role: 'user', content: `${userPrompt}${continuationHint}` });
+    const continuationHint = cp.partialOutput ? `\n\n## Previous Output (continue from here — DO NOT repeat work already done)\n${cp.partialOutput.slice(-2000)}` : '';
+    const toolHistory = cp.agentState.toolResults.length > 0
+      ? `\n\n## Tool Results So Far\n${cp.agentState.toolResults.map((t,i) => `${i+1}. ${t.tool || t.type}: ${t.result} (${t.success ? 'SUCCESS' : 'FAILED'})`).join('\n')}\n\nIf a tool already succeeded, do NOT retry it. Provide your final answer.` : '';
+    messages.push({ role: 'user', content: `${userPrompt}${continuationHint}${toolHistory}` });
 
     // Check time budget
     const remainingMs = startTime + MAX_SLICE_MS - Date.now();
@@ -389,6 +391,7 @@ async function runSlice(cp: Checkpoint): Promise<void> {
     newOutput = newOutput.replace('[DONE]', '').trimEnd();
 
     // Handle function calls (GitHub operations)
+    let toolSuccess = false;
     if (msg?.tool_calls && msg.tool_calls.length > 0) {
       messages.push({ role: 'assistant', content: newOutput, tool_calls: msg.tool_calls });
       for (const toolCall of msg.tool_calls) {
@@ -397,9 +400,25 @@ async function runSlice(cp: Checkpoint): Promise<void> {
         try { fnArgs = JSON.parse(toolCall.function.arguments); } catch {}
 
         const result = await executeGithubFunction(fnName, fnArgs);
-        cp.agentState.toolResults.push({ tool: fnName, args: fnArgs, result: result.slice(0, 500) });
+        const success = !result.startsWith('Error:');
+        if (success) toolSuccess = true;
+        cp.agentState.toolResults.push({ tool: fnName, args: fnArgs, result: result.slice(0, 500), success });
         cp.agentState.actions.push(`${fnName}(${JSON.stringify(fnArgs).slice(0, 100)}) -> ${result.slice(0, 200)}`);
         messages.push({ role: 'tool', tool_call_id: toolCall.id, name: fnName, content: result });
+      }
+
+      // If GitHub push succeeded, mark task complete — don't retry
+      if (toolSuccess && (cp.taskType === 'build' || cp.taskType === 'push' || cp.taskType === 'deploy')) {
+        const successMsg = cp.agentState.toolResults.filter(t => t.success).map(t => t.result).join('\n');
+        cp.partialOutput += successMsg;
+        cp.agentState.phase = 'done';
+        cp.agentState.progress = 100;
+        cp.status = 'completed';
+        cp.lastCheckpointAt = Date.now();
+        await saveCheckpoint(cp);
+        await saveMemory(`Completed "${taskDesc}" — ${successMsg.slice(0, 200)}`, 'task-history');
+        console.log(`[heartbeat] Task ${cp.id} completed after GitHub push (${cp.resumeCount} slices)`);
+        return;
       }
 
       // Make a follow-up call with tool results
@@ -413,7 +432,15 @@ async function runSlice(cp: Checkpoint): Promise<void> {
       if (res2.ok) {
         const data2 = await res2.json();
         const msg2 = data2.choices?.[0]?.message;
-        if (msg2?.content) newOutput += '\n' + msg2.content.replace('[DONE]', '').trimEnd();
+        if (msg2?.content) {
+          const content2 = msg2.content.replace('[DONE]', '').trimEnd();
+          newOutput += '\n' + content2;
+          if (data2.choices?.[0]?.finish_reason === 'stop' && toolSuccess) {
+            // Model confirmed completion after tool use
+            cp.agentState.phase = 'done';
+            cp.agentState.progress = 100;
+          }
+        }
       }
     }
 
