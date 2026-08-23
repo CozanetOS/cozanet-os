@@ -142,7 +142,7 @@ async function scheduleNextPing(): Promise<void> {
   const heartbeatUrl = process.env.HEARTBEAT_URL;
   if (!qstashUrl || !qstashToken || !heartbeatUrl) return;
   try {
-    await fetch(`${qstashUrl}/publish/${encodeURIComponent(heartbeatUrl)}`, {
+    await fetch(`${qstashUrl}/publish/${heartbeatUrl}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${qstashToken}`,
