@@ -294,6 +294,98 @@ const GITHUB_TOOLS = [
         required: ["repo", "prNumber"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_search_repos",
+      description: "Search for repositories across GitHub or in a specific org",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query (e.g. 'org:CozanetOS' or 'AI agent framework')" },
+          perPage: { type: "number", description: "Results per page (default: 10, max: 30)" }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_search_code",
+      description: "Search for code across GitHub repositories",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Code search query (e.g. 'function heartbeat org:CozanetOS')" },
+          perPage: { type: "number", description: "Results per page (default: 10)" }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_search_issues",
+      description: "Search for issues and pull requests",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Issue search query (e.g. 'is:issue is:open org:CozanetOS')" },
+          perPage: { type: "number", description: "Results per page (default: 10)" }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_get_org",
+      description: "Get information about a GitHub organization (repos, members, profile)",
+      parameters: {
+        type: "object",
+        properties: {
+          org: { type: "string", description: "Organization name (default: CozanetOS)" }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_list_commits",
+      description: "List recent commits in a repository",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          branch: { type: "string", description: "Branch name (default: main)" },
+          perPage: { type: "number", description: "Number of commits (default: 10)" }
+        },
+        required: ["repo"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_create_issue",
+      description: "Create an issue in a repository",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          title: { type: "string" },
+          body: { type: "string", description: "Issue description (markdown)" },
+          labels: { type: "array", items: { "type": "string" }, description: "Issue labels" }
+        },
+        required: ["repo", "title"]
+      }
+    }
   }
 ];
 
@@ -425,6 +517,54 @@ async function executeGithubFunction(name: string, args: any): Promise<string> {
         const data = await res.json();
         return res.ok ? `PR #${prNumber} merged (${method}) in ${repo}` : `Error: ${data.message}`;
       }
+      case 'github_search_repos': {
+        const { query, perPage = 10 } = args;
+        const res = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(query)}&per_page=${perPage}`, { headers });
+        const data = await res.json();
+        if (!data.items) return `No repos found for: ${query}`;
+        return data.items.map((r: any) => `${r.full_name} ⭐${r.stargazers_count} — ${r.description || 'no description'} (${r.language || '?'})`).join('\n');
+      }
+      case 'github_search_code': {
+        const { query, perPage = 10 } = args;
+        const res = await fetch(`https://api.github.com/search/code?q=${encodeURIComponent(query)}&per_page=${perPage}`, { headers });
+        const data = await res.json();
+        if (!data.items) return `No code found for: ${query}`;
+        return data.items.map((c: any) => `${c.repository.full_name}:${c.path} (score: ${c.score})`).join('\n');
+      }
+      case 'github_search_issues': {
+        const { query, perPage = 10 } = args;
+        const res = await fetch(`https://api.github.com/search/issues?q=${encodeURIComponent(query)}&per_page=${perPage}`, { headers });
+        const data = await res.json();
+        if (!data.items) return `No issues found for: ${query}`;
+        return data.items.map((i: any) => `#${i.number}: ${i.title} [${i.state}] in ${i.repository_url?.split('/').slice(-1)[0]} by ${i.user?.login}`).join('\n');
+      }
+      case 'github_get_org': {
+        const { org = GITHUB_ORG } = args;
+        const orgRes = await fetch(`https://api.github.com/orgs/${org}`, { headers });
+        if (!orgRes.ok) return `Error: org ${org} not found`;
+        const orgData = await orgRes.json();
+        const reposRes = await fetch(`https://api.github.com/orgs/${org}/repos?per_page=50&sort=updated`, { headers });
+        const repos = await reposRes.json();
+        const repoList = Array.isArray(repos) ? repos.map((r: any) => `  - ${r.name} (${r.language || '?'}, ${r.private ? 'private' : 'public'}, updated ${new Date(r.updated_at).toLocaleDateString()})`).join('\n') : 'No repos';
+        return `Organization: ${orgData.name || org}\nMembers: ${orgData.public_members_count || '?'}\nRepos: ${orgData.public_repos || repos.length}\n\nRepositories:\n${repoList}`;
+      }
+      case 'github_list_commits': {
+        const { repo, branch = 'main', perPage = 10 } = args;
+        const res = await fetch(`${base}/${repo}/commits?sha=${branch}&per_page=${perPage}`, { headers });
+        const data = await res.json();
+        if (!Array.isArray(data)) return `Error: ${data.message}`;
+        return data.map((c: any) => `${c.sha?.slice(0,7)} ${c.commit?.message?.split('\n')[0]} — ${c.commit?.author?.name} (${c.commit?.author?.date?.split('T')[0]})`).join('\n');
+      }
+      case 'github_create_issue': {
+        const { repo, title, body = '', labels = [] } = args;
+        const res = await fetch(`${base}/${repo}/issues`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ title, body, labels }),
+        });
+        const data = await res.json();
+        return res.ok ? `Issue #${data.number} created: ${data.html_url}` : `Error: ${data.message}`;
+      }
       default:
         return `Unknown function: ${name}`;
     }
@@ -467,22 +607,45 @@ async function runSlice(cp: Checkpoint): Promise<void> {
       if (fileContents.length > 0) fileContext = `\n\n## Attached Files\n${fileContents.join('\n\n')}`;
     }
 
-    // Build system prompt
-    let systemPrompt = `You are CozanetOS AI Agent. You work in time-sliced chunks (max 8s per slice). You may be resumed multiple times. Always produce useful output.
+    // Build system prompt — AGGRESSIVELY agent-like
+    let systemPrompt = `You are CozanetOS — an autonomous AI agent. You DO things, you don't just answer questions.
+
+## Your Tools (ALWAYS AVAILABLE — USE THEM)
+- **browser_search**: Search the web for real-time information
+- **code_interpreter**: Execute Python code for calculations, data processing
+- **github_search_repos**: Search GitHub for repositories (e.g. query="org:CozanetOS")
+- **github_search_code**: Search code across repos
+- **github_search_issues**: Search issues and PRs
+- **github_get_org**: Get full info about a GitHub org (repos, members)
+- **github_list_repos**: List repos in CozanetOS org
+- **github_read_file**: Read any file from any repo
+- **github_create_file**: Write/push code to a repo (auto-creates branch + PR)
+- **github_create_branch**: Create a new branch
+- **github_create_pr**: Create a pull request
+- **github_review_pr**: Review a PR's code and post feedback
+- **github_list_prs**: List open PRs
+- **github_merge_pr**: Merge a PR
+- **github_create_issue**: Create an issue
+- **github_list_commits**: See recent commits
+
+## CRITICAL RULES
+1. USE TOOLS FIRST. When asked to search, call github_search_repos or browser_search. When asked to write code, call github_create_file. DO NOT just describe what you would do — actually DO it by calling functions.
+2. You are an AGENT, not a chatbot. "Search for the CozanetOS org" means CALL github_get_org, not describe how you would search.
+3. Every response should either call a tool or summarize tool results. Never respond with only text when a tool could answer the question.
+4. When pushing code, always use github_create_file — it handles branch creation and PR automatically.
 
 ## Current Context
 - Task: ${taskDesc}
 - Task type: ${cp.taskType}
 - Slice #: ${cp.resumeCount}
 - Phase: ${cp.agentState.phase}
-- Progress: ${cp.agentState.progress}%
-- Previous output length: ${cp.partialOutput.length} chars${memoryContext}
+- GitHub Org: ${GITHUB_ORG}
+- Progress: ${cp.agentState.progress}%${memoryContext}${fileContext}
 
 ## Instructions
-- If first slice, analyze and start working. If resuming, continue — don't repeat.
-- Be concise but thorough. Output your work directly.
-- End with "[DONE]" on a new line when the task is complete.
-- When pushing code to GitHub, the agent automatically creates a branch and PR if the repo has branch protection.` + fileContext;
+- If first slice, ACT IMMEDIATELY — call the relevant tool. Don't explain, just do.
+- If resuming, check tool history. If a tool already succeeded, summarize results. Don't repeat.
+- End with "[DONE]" when the task is complete.`;
 
     // Build messages
     const messages: any[] = [{ role: 'system', content: systemPrompt }];
@@ -506,35 +669,17 @@ async function runSlice(cp: Checkpoint): Promise<void> {
     const useBuiltInTools = cp.useBuiltInTools !== false; // Default true
     const useGithubTools = cp.useGithubTools !== false && GITHUB_TOKEN; // Default true if token exists
 
-    // Determine if this task needs built-in tools
-    const needsWebSearch = ['research', 'analyze', 'investigate', 'browse', 'study'].some(t => cp.taskType.includes(t));
-    const needsCodeExec = ['code', 'build', 'calculate', 'compute', 'debug'].some(t => cp.taskType.includes(t));
-    const needsGithub = ['github', 'push', 'deploy', 'commit', 'pr', 'repo', 'review', 'merge', 'build'].some(t => cp.taskType.includes(t) || taskDesc.toLowerCase().includes(t));
-
+    // ALWAYS include ALL tools — let the model decide which to use
     const requestBody: any = {
       model,
       messages,
       temperature: 0.7,
       max_tokens: 3000,
+      tools: useGithubTools && GITHUB_TOKEN
+        ? [...GITHUB_TOOLS, { type: "browser_search" as any }, { type: "code_interpreter" as any }]
+        : [{ type: "browser_search" as any }, { type: "code_interpreter" as any }],
+      tool_choice: "auto",
     };
-
-    // Add built-in tools for gpt-oss-120b
-    const builtInTools: any[] = [];
-    if (useBuiltInTools && (needsWebSearch || needsCodeExec)) {
-      if (needsWebSearch) builtInTools.push({ type: "browser_search" });
-      if (needsCodeExec) builtInTools.push({ type: "code_interpreter" });
-    }
-    // Always allow both tools for general tasks (model decides)
-    if (useBuiltInTools && builtInTools.length === 0 && cp.resumeCount === 1) {
-      builtInTools.push({ type: "browser_search" }, { type: "code_interpreter" });
-    }
-
-    // Add GitHub function calling tools
-    if (useGithubTools && (needsGithub || cp.resumeCount === 1)) {
-      requestBody.tools = [...builtInTools, ...GITHUB_TOOLS];
-    } else if (builtInTools.length > 0) {
-      requestBody.tools = builtInTools;
-    }
 
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -577,17 +722,31 @@ async function runSlice(cp: Checkpoint): Promise<void> {
         messages.push({ role: 'tool', tool_call_id: toolCall.id, name: fnName, content: result });
       }
 
-      // If GitHub push succeeded, mark task complete — don't retry
-      if (toolSuccess && (cp.taskType === 'build' || cp.taskType === 'push' || cp.taskType === 'deploy')) {
-        const successMsg = cp.agentState.toolResults.filter(t => t.success).map(t => t.result).join('\n');
-        cp.partialOutput += successMsg;
+      // If any tool succeeded on first slice, mark complete — the tool result IS the answer
+      if (toolSuccess && cp.resumeCount === 1) {
+        const successResults = cp.agentState.toolResults.filter(t => t.success);
+        const successMsg = successResults.map(t => `**${t.tool}** results:\n${t.result}`).join('\n\n');
+        cp.partialOutput = successMsg;
         cp.agentState.phase = 'done';
         cp.agentState.progress = 100;
         cp.status = 'completed';
         cp.lastCheckpointAt = Date.now();
         await saveCheckpoint(cp);
         await saveMemory(`Completed "${taskDesc}" — ${successMsg.slice(0, 200)}`, 'task-history');
-        console.log(`[heartbeat] Task ${cp.id} completed after GitHub push (${cp.resumeCount} slices)`);
+        console.log(`[heartbeat] Task ${cp.id} completed after tool call (${cp.resumeCount} slice)`);
+        return;
+      }
+      // If tools succeeded on a later slice, also complete
+      if (toolSuccess && cp.agentState.toolResults.filter(t => t.success).length > 0) {
+        const successResults = cp.agentState.toolResults.filter(t => t.success);
+        const successMsg = successResults.map(t => `**${t.tool}** results:\n${t.result}`).join('\n\n');
+        cp.partialOutput = successMsg;
+        cp.agentState.phase = 'done';
+        cp.agentState.progress = 100;
+        cp.status = 'completed';
+        cp.lastCheckpointAt = Date.now();
+        await saveCheckpoint(cp);
+        await saveMemory(`Completed "${taskDesc}" — ${successMsg.slice(0, 200)}`, 'task-history');
         return;
       }
 
@@ -602,15 +761,28 @@ async function runSlice(cp: Checkpoint): Promise<void> {
       if (res2.ok) {
         const data2 = await res2.json();
         const msg2 = data2.choices?.[0]?.message;
-        if (msg2?.content) {
+        if (msg2?.content && msg2.content.trim().length > 10) {
           const content2 = msg2.content.replace('[DONE]', '').trimEnd();
           newOutput += '\n' + content2;
-          if (data2.choices?.[0]?.finish_reason === 'stop' && toolSuccess) {
-            // Model confirmed completion after tool use
+          if (data2.choices?.[0]?.finish_reason === 'stop') {
             cp.agentState.phase = 'done';
             cp.agentState.progress = 100;
           }
+        } else if (toolSuccess) {
+          // Model didn't produce text but tools succeeded — use tool results as output
+          const toolResults = cp.agentState.toolResults.filter(t => t.success)
+            .map(t => `**${t.tool}** results:\n${t.result}`).join('\n\n');
+          newOutput = toolResults;
+          cp.agentState.phase = 'done';
+          cp.agentState.progress = 100;
         }
+      } else if (toolSuccess) {
+        // Follow-up call failed but tools succeeded — use tool results
+        const toolResults = cp.agentState.toolResults.filter(t => t.success)
+          .map(t => `**${t.tool}** results:\n${t.result}`).join('\n\n');
+        newOutput = toolResults;
+        cp.agentState.phase = 'done';
+        cp.agentState.progress = 100;
       }
     }
 
@@ -623,6 +795,11 @@ async function runSlice(cp: Checkpoint): Promise<void> {
     }
 
     // Accumulate output
+    if (!newOutput && toolSuccess) {
+      // No text output but tools succeeded — use tool results
+      newOutput = cp.agentState.toolResults.filter(t => t.success)
+        .map(t => `**${t.tool}** results:\n${t.result}`).join('\n\n');
+    }
     if (cp.partialOutput && !cp.partialOutput.endsWith('\n')) cp.partialOutput += '\n';
     cp.partialOutput += newOutput;
 
