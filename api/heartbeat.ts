@@ -58,7 +58,7 @@ const AGENT_PERSONAS: Record<string, AgentPersona> = {
   coding: { id: 'coding', name: 'Coding Agent', role: 'Code generation engine',
     systemPrompt: 'You are the Coding Agent of CozanetOS. You generate clean, production-ready code. You follow best practices, include error handling, and write modular code. Always wrap code in proper markdown code blocks.',
     taskTypes: ['build', 'generate_code', 'code', 'refactor', 'debug'],
-    model: 'llama-3.3-70b-versatile' },
+    model: 'openai/gpt-oss-120b' },
   memory: { id: 'memory', name: 'Memory Agent', role: 'Memory manager',
     systemPrompt: 'You are the Memory Agent of CozanetOS. You manage the system memory — extracting key facts, organizing memories, and retrieving relevant context.',
     taskTypes: ['memorize', 'recall', 'organize', 'forget', 'think'] },
@@ -260,10 +260,10 @@ async function callGroqStream(
   messages: any[],
   model: string,
   maxTokens: number,
-  onToken: (token: string) => void
-): Promise<{ full: string; finishReason: string | null; error: string | null }> {
+  onToken: (token: string, isReasoning: boolean) => void
+): Promise<{ full: string; reasoning: string; finishReason: string | null; error: string | null }> {
   const apiKey = nextGroqKey();
-  if (!apiKey) return { full: '', finishReason: null, error: 'no-groq-key' };
+  if (!apiKey) return { full: '', reasoning: '', finishReason: null, error: 'no-groq-key' };
 
   try {
     const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -274,15 +274,16 @@ async function callGroqStream(
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      return { full: '', finishReason: null, error: `groq-error:${res.status}` };
+      return { full: '', reasoning: '', finishReason: null, error: `groq-error:${res.status}` };
     }
 
     const reader = res.body?.getReader();
-    if (!reader) return { full: '', finishReason: null, error: 'no-stream-reader' };
+    if (!reader) return { full: '', reasoning: '', finishReason: null, error: 'no-stream-reader' };
 
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
+    let reasoningText = '';
     let finishReason: string | null = null;
 
     while (true) {
@@ -297,15 +298,18 @@ async function callGroqStream(
         if (data === '[DONE]') continue;
         try {
           const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content;
-          if (delta) { fullText += delta; onToken(delta); }
+          const delta = json.choices?.[0]?.delta;
+          const contentDelta = delta?.content || '';
+          const reasoningDelta = delta?.reasoning || '';
+          if (contentDelta) { fullText += contentDelta; onToken(contentDelta, false); }
+          if (reasoningDelta) { reasoningText += reasoningDelta; onToken(reasoningDelta, true); }
           if (json.choices?.[0]?.finish_reason) finishReason = json.choices[0].finish_reason;
         } catch {}
       }
     }
-    return { full: fullText, finishReason, error: null };
+    return { full: fullText, reasoning: reasoningText, finishReason, error: null };
   } catch (err: any) {
-    return { full: '', finishReason: null, error: `groq-failed:${err.message}` };
+    return { full: '', reasoning: '', finishReason: null, error: `groq-failed:${err.message}` };
   }
 }
 
@@ -341,7 +345,7 @@ async function runSlice(cp: Checkpoint): Promise<void> {
 
   try {
     const persona = resolvePersona(cp.taskType, cp.agentId);
-    const model = persona.model || 'llama-3.3-70b-versatile';
+    const model = persona.model || 'openai/gpt-oss-120b';
     const taskDesc = cp.taskDescription || cp.taskType;
 
     // Initialize agent state on first slice
@@ -400,9 +404,11 @@ You are CozanetOS ${persona.name}. You work in time-sliced chunks (max 8s per sl
 
     const maxTokens = Math.min(Math.floor(remainingMs / 50), 1500);
     let streamedText = '';
+    let streamedReasoning = '';
 
-    const result = await callGroqStream(messages, model, maxTokens, (token) => {
-      streamedText += token;
+    const result = await callGroqStream(messages, model, maxTokens, (token, isReasoning) => {
+      if (isReasoning) streamedReasoning += token;
+      else streamedText += token;
     });
 
     const elapsed = Date.now() - startTime;
@@ -428,6 +434,9 @@ You are CozanetOS ${persona.name}. You work in time-sliced chunks (max 8s per sl
     );
 
     // Phase progression
+    if (streamedReasoning) {
+      cp.agentState.thoughts.push(streamedReasoning.slice(0, 500));
+    }
     if (cp.agentState.phase === 'think') {
       cp.agentState.thoughts.push(newOutput.slice(0, 200));
       cp.agentState.phase = 'act';
