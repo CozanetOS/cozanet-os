@@ -248,6 +248,52 @@ const GITHUB_TOOLS = [
         required: ["repo", "title", "head"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_review_pr",
+      description: "Read a pull request diff and post a code review comment",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string", description: "Repository name" },
+          prNumber: { type: "number", description: "PR number to review" }
+        },
+        required: ["repo", "prNumber"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_list_prs",
+      description: "List open pull requests in a repository",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string", description: "Repository name" },
+          state: { type: "string", description: "open, closed, or all (default: open)" }
+        },
+        required: ["repo"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_merge_pr",
+      description: "Merge a pull request",
+      parameters: {
+        type: "object",
+        properties: {
+          repo: { type: "string" },
+          prNumber: { type: "number" },
+          method: { type: "string", description: "merge, squash, or rebase (default: squash)" }
+        },
+        required: ["repo", "prNumber"]
+      }
+    }
   }
 ];
 
@@ -314,6 +360,70 @@ async function executeGithubFunction(name: string, args: any): Promise<string> {
         const res = await fetch(`${base}/${repo}/pulls`, { method: 'POST', headers, body: JSON.stringify({ title, body, head, base }) });
         const data = await res.json();
         return res.ok ? `PR #${data.number} created: ${data.html_url}` : `Error: ${data.message}`;
+      }
+      case 'github_review_pr': {
+        const { repo, prNumber } = args;
+        // Get the PR diff
+        const diffRes = await fetch(`${base}/${repo}/pulls/${prNumber}`, {
+          headers: { ...headers, 'Accept': 'application/vnd.github.v3.diff' }
+        });
+        if (!diffRes.ok) return `Error: PR #${prNumber} not found`;
+        const diff = await diffRes.text();
+        const diffPreview = diff.slice(0, 6000);
+
+        // Get PR details for context
+        const prRes = await fetch(`${base}/${repo}/pulls/${prNumber}`, { headers });
+        const prData = await prRes.json();
+
+        // Use Groq to analyze the diff
+        const reviewPrompt = `You are a code reviewer. Review this PR diff and provide concise, actionable feedback. Focus on bugs, security issues, and improvements.\n\nPR: ${prData.title}\nBranch: ${prData.head?.ref} -> ${prData.base?.ref}\nFiles changed: ${prData.changed_files}\n\nDiff:\n${diffPreview}`;
+
+        const reviewRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getGroqKey()}` },
+          body: JSON.stringify({
+            model: 'openai/gpt-oss-120b',
+            messages: [{ role: 'user', content: reviewPrompt }],
+            max_tokens: 1000,
+            temperature: 0.3,
+          }),
+        });
+
+        let reviewText = 'Review complete.';
+        if (reviewRes.ok) {
+          const reviewData = await reviewRes.json();
+          reviewText = reviewData.choices?.[0]?.message?.content || 'No review generated.';
+        }
+
+        // Post the review as a comment on the PR
+        const commentRes = await fetch(`${base}/${repo}/issues/${prNumber}/comments`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ body: `🤖 **CozanetOS Agent Code Review**\n\n${reviewText}` }),
+        });
+        const commentData = await commentRes.json();
+        return commentRes.ok
+          ? `Review posted on PR #${prNumber}: ${commentData.html_url}\n\nReview summary: ${reviewText.slice(0, 500)}`
+          : `Error posting review: ${commentData.message}`;
+      }
+      case 'github_list_prs': {
+        const { repo, state = 'open' } = args;
+        const res = await fetch(`${base}/${repo}/pulls?state=${state}&per_page=20`, { headers });
+        const data = await res.json();
+        if (!Array.isArray(data)) return `Error: ${data.message}`;
+        return data.length === 0
+          ? `No ${state} PRs in ${repo}`
+          : data.map((pr: any) => `#${pr.number}: ${pr.title} (${pr.head.ref} -> ${pr.base.ref}) by ${pr.user.login} — ${pr.state}`).join('\n');
+      }
+      case 'github_merge_pr': {
+        const { repo, prNumber, method = 'squash' } = args;
+        const res = await fetch(`${base}/${repo}/pulls/${prNumber}/merge`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ merge_method: method }),
+        });
+        const data = await res.json();
+        return res.ok ? `PR #${prNumber} merged (${method}) in ${repo}` : `Error: ${data.message}`;
       }
       default:
         return `Unknown function: ${name}`;
@@ -399,7 +509,7 @@ async function runSlice(cp: Checkpoint): Promise<void> {
     // Determine if this task needs built-in tools
     const needsWebSearch = ['research', 'analyze', 'investigate', 'browse', 'study'].some(t => cp.taskType.includes(t));
     const needsCodeExec = ['code', 'build', 'calculate', 'compute', 'debug'].some(t => cp.taskType.includes(t));
-    const needsGithub = ['github', 'push', 'deploy', 'commit', 'pr', 'repo'].some(t => cp.taskType.includes(t) || taskDesc.toLowerCase().includes(t));
+    const needsGithub = ['github', 'push', 'deploy', 'commit', 'pr', 'repo', 'review', 'merge', 'build'].some(t => cp.taskType.includes(t) || taskDesc.toLowerCase().includes(t));
 
     const requestBody: any = {
       model,
@@ -594,6 +704,7 @@ export default async function handler(req: { method?: string; body?: any; query?
       githubOrg: GITHUB_ORG,
       builtInTools: ['browser_search', 'code_interpreter'],
       githubTools: GITHUB_TOOLS.map(t => t.function.name),
+      reviewCapable: true,
       fileUpload: true,
       maxFileSize: '5MB',
     });
